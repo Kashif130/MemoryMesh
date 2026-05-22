@@ -1,0 +1,2075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="description" content="MemoryMesh AI — Robot Identity & Memory Subnet on Konnex Testnet"/>
+<meta property="og:title" content="MemoryMesh AI — Konnex Subnet"/>
+<meta property="og:description" content="On-chain robot identity, persistent memory, and reputation scoring for the physical-AI economy."/>
+<title>MemoryMesh AI — Konnex Subnet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<style>
+/* ═══════════ RESET & ROOT ═══════════ */
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
+:root{
+  --bg:#04080f;
+  --surface:#080e1c;
+  --card:#0c1428;
+  --card2:#101c30;
+  --border:#1a2a45;
+  --border2:#243550;
+  --cyan:#00e5ff;
+  --cyan2:#00b8d4;
+  --green:#00e676;
+  --yellow:#ffd740;
+  --red:#ff5252;
+  --purple:#ce93d8;
+  --orange:#ff9800;
+  --text:#e8f0fe;
+  --muted:#4a6080;
+  --muted2:#6a80a0;
+  --font-display:'Syne',sans-serif;
+  --font-mono:'Space Mono',monospace;
+}
+html{scroll-behavior:smooth;}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--font-display);
+  min-height:100vh;
+  overflow-x:hidden;
+}
+
+/* ═══════════ GRID NOISE BG ═══════════ */
+body::before{
+  content:'';
+  position:fixed;inset:0;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 20% 10%, #00e5ff0a 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 80%, #00e6760a 0%, transparent 60%),
+    linear-gradient(#1a2a4508 1px, transparent 1px),
+    linear-gradient(90deg, #1a2a4508 1px, transparent 1px);
+  background-size:100% 100%, 100% 100%, 40px 40px, 40px 40px;
+  pointer-events:none;
+  z-index:0;
+}
+body>*{position:relative;z-index:1;}
+
+/* ═══════════ NAV ═══════════ */
+nav{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 2rem;height:64px;
+  background:rgba(4,8,15,0.85);
+  backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:200;
+}
+.nav-logo{
+  font-family:var(--font-mono);
+  font-size:.9rem;font-weight:700;
+  color:var(--cyan);letter-spacing:2px;
+  text-transform:uppercase;
+}
+.nav-logo span{color:var(--text);font-weight:400;}
+.nav-right{display:flex;align-items:center;gap:1rem;}
+.net-pill{
+  display:flex;align-items:center;gap:6px;
+  background:#00e5ff10;border:1px solid #00e5ff30;
+  border-radius:20px;padding:5px 12px;
+  font-family:var(--font-mono);font-size:.68rem;color:var(--cyan);
+}
+.pulse-dot{width:6px;height:6px;border-radius:50%;background:var(--green);
+  box-shadow:0 0 6px var(--green);animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+
+/* ═══════════ WALLET BUTTON ═══════════ */
+.wallet-btn{
+  display:flex;align-items:center;gap:8px;
+  background:linear-gradient(135deg,#00e5ff15,#00e67610);
+  border:1px solid var(--border2);
+  border-radius:10px;padding:8px 16px;
+  font-family:var(--font-mono);font-size:.75rem;color:var(--text);
+  cursor:pointer;transition:all .2s;white-space:nowrap;
+}
+.wallet-btn:hover{border-color:var(--cyan);color:var(--cyan);
+  box-shadow:0 0 20px #00e5ff15;}
+.wallet-btn.connected{
+  background:linear-gradient(135deg,#00e67610,#00e5ff10);
+  border-color:#00e67640;color:var(--green);
+}
+.wallet-btn svg{width:16px;height:16px;flex-shrink:0;}
+
+/* ═══════════ WALLET MODAL ═══════════ */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(4,8,15,.85);
+  backdrop-filter:blur(8px);z-index:500;
+  display:none;align-items:center;justify-content:center;
+  animation:fadeIn .2s ease;
+}
+.modal-overlay.open{display:flex;}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{
+  background:var(--card);border:1px solid var(--border2);
+  border-radius:20px;padding:2rem;width:420px;max-width:95vw;
+  animation:slideUp .25s ease;
+}
+@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+.modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;}
+.modal-title{font-size:1.1rem;font-weight:700;color:var(--text);}
+.modal-close{background:none;border:none;color:var(--muted2);cursor:pointer;
+  font-size:1.2rem;padding:4px;border-radius:6px;transition:.2s;}
+.modal-close:hover{color:var(--text);background:var(--card2);}
+.modal-sub{font-size:.78rem;color:var(--muted2);margin-bottom:1.5rem;line-height:1.6;}
+.wallet-option{
+  display:flex;align-items:center;gap:12px;
+  padding:14px 16px;border-radius:12px;
+  border:1px solid var(--border);background:var(--card2);
+  cursor:pointer;transition:all .2s;margin-bottom:.75rem;
+}
+.wallet-option:hover{border-color:var(--cyan);background:#00e5ff08;}
+.wallet-option-icon{
+  width:40px;height:40px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.2rem;flex-shrink:0;
+}
+.wallet-option-name{font-size:.88rem;font-weight:700;color:var(--text);}
+.wallet-option-desc{font-size:.72rem;color:var(--muted2);margin-top:2px;}
+.wallet-option-badge{
+  margin-left:auto;padding:3px 8px;border-radius:6px;
+  font-family:var(--font-mono);font-size:.62rem;font-weight:700;
+}
+.badge-recommended{background:#00e67615;color:var(--green);border:1px solid #00e67630;}
+.badge-popular{background:#00e5ff15;color:var(--cyan);border:1px solid #00e5ff30;}
+.divider-text{text-align:center;color:var(--muted);font-size:.72rem;
+  font-family:var(--font-mono);margin:.75rem 0;position:relative;}
+.divider-text::before,.divider-text::after{content:'';position:absolute;
+  top:50%;width:40%;height:1px;background:var(--border);}
+.divider-text::before{left:0}
+.divider-text::after{right:0}
+.manual-input-group{margin-top:.5rem;}
+.manual-input-group label{font-size:.72rem;color:var(--muted2);
+  font-family:var(--font-mono);display:block;margin-bottom:.4rem;}
+.manual-input-group input{
+  width:100%;background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;padding:.6rem .8rem;color:var(--text);
+  font-family:var(--font-mono);font-size:.75rem;outline:none;transition:.2s;
+}
+.manual-input-group input:focus{border-color:var(--cyan);}
+.connect-manual-btn{
+  margin-top:.75rem;width:100%;padding:.7rem;
+  background:linear-gradient(135deg,var(--cyan),var(--cyan2));
+  border:none;border-radius:10px;
+  font-family:var(--font-mono);font-size:.8rem;font-weight:700;
+  color:#000;cursor:pointer;transition:.2s;
+}
+.connect-manual-btn:hover{opacity:.9;transform:translateY(-1px);}
+.wallet-info-box{
+  margin-top:1rem;padding:.8rem 1rem;
+  background:#00e67608;border:1px solid #00e67625;border-radius:10px;
+  font-family:var(--font-mono);font-size:.72rem;color:var(--green);
+}
+.wallet-info-row{display:flex;justify-content:space-between;margin-bottom:.3rem;}
+.wallet-info-row:last-child{margin-bottom:0;}
+.wallet-info-label{color:var(--muted2);}
+.disconnect-btn{
+  margin-top:1rem;width:100%;padding:.6rem;
+  background:transparent;border:1px solid var(--border2);border-radius:8px;
+  font-family:var(--font-mono);font-size:.75rem;color:var(--muted2);
+  cursor:pointer;transition:.2s;
+}
+.disconnect-btn:hover{border-color:var(--red);color:var(--red);}
+
+/* ═══════════ TABS ═══════════ */
+.tabs-wrap{
+  background:rgba(4,8,15,.6);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--border);
+  padding:0 2rem;display:flex;gap:0;overflow-x:auto;
+}
+.tabs-wrap::-webkit-scrollbar{height:2px;}
+.tabs-wrap::-webkit-scrollbar-thumb{background:var(--border2);}
+.tab{
+  padding:14px 18px;cursor:pointer;white-space:nowrap;
+  font-family:var(--font-mono);font-size:.72rem;letter-spacing:1px;
+  text-transform:uppercase;color:var(--muted2);
+  border-bottom:2px solid transparent;transition:all .2s;
+}
+.tab:hover{color:var(--text);}
+.tab.active{color:var(--cyan);border-bottom-color:var(--cyan);}
+
+/* ═══════════ PAGES ═══════════ */
+.page{display:none;padding:2rem;max-width:1400px;margin:0 auto;animation:fadeIn .3s ease;}
+.page.active{display:block;}
+
+/* ═══════════ SECTION TITLE ═══════════ */
+.section-title{
+  font-size:.65rem;font-family:var(--font-mono);letter-spacing:3px;
+  text-transform:uppercase;color:var(--cyan);margin-bottom:1.2rem;
+  display:flex;align-items:center;gap:.6rem;
+}
+.section-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--border2),transparent);}
+
+/* ═══════════ STAT CARDS ═══════════ */
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;margin-bottom:2rem;}
+.stat-card{
+  background:var(--card);border:1px solid var(--border);border-radius:14px;
+  padding:1.3rem;position:relative;overflow:hidden;transition:.3s;
+}
+.stat-card:hover{border-color:var(--border2);transform:translateY(-2px);}
+.stat-card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--accent,var(--cyan)),transparent);
+}
+.stat-label{font-family:var(--font-mono);font-size:.62rem;letter-spacing:1.5px;
+  text-transform:uppercase;color:var(--muted2);margin-bottom:.5rem;}
+.stat-value{font-size:2rem;font-weight:800;line-height:1;}
+.stat-sub{font-family:var(--font-mono);font-size:.65rem;color:var(--muted);margin-top:.4rem;}
+.c-cyan{color:var(--cyan);} .c-green{color:var(--green);}
+.c-yellow{color:var(--yellow);} .c-red{color:var(--red);}
+.c-purple{color:var(--purple);} .c-orange{color:var(--orange);}
+
+/* ═══════════ CARDS ═══════════ */
+.card{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:14px;padding:1.5rem;margin-bottom:1.5rem;
+}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.5rem;}
+@media(max-width:900px){.grid2,.grid3{grid-template-columns:1fr;}}
+
+/* ═══════════ TABLES ═══════════ */
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:.8rem;}
+th{
+  text-align:left;padding:.6rem .8rem;
+  font-family:var(--font-mono);font-size:.62rem;letter-spacing:1px;
+  text-transform:uppercase;color:var(--muted2);
+  border-bottom:1px solid var(--border);white-space:nowrap;
+}
+td{padding:.75rem .8rem;border-bottom:1px solid #0c1428;vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:#0c1f3a;}
+
+/* ═══════════ BADGES ═══════════ */
+.badge{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 8px;border-radius:6px;
+  font-family:var(--font-mono);font-size:.65rem;font-weight:700;
+  white-space:nowrap;
+}
+.bg-cyan{background:#00e5ff12;color:var(--cyan);border:1px solid #00e5ff30;}
+.bg-green{background:#00e67612;color:var(--green);border:1px solid #00e67630;}
+.bg-yellow{background:#ffd74012;color:var(--yellow);border:1px solid #ffd74030;}
+.bg-red{background:#ff525212;color:var(--red);border:1px solid #ff525230;}
+.bg-purple{background:#ce93d812;color:var(--purple);border:1px solid #ce93d830;}
+.bg-orange{background:#ff980012;color:var(--orange);border:1px solid #ff980030;}
+.bg-muted{background:#1a2a4520;color:var(--muted2);border:1px solid var(--border);}
+
+/* ═══════════ SCORE BAR ═══════════ */
+.score-bar{height:4px;border-radius:2px;background:#1a2a45;overflow:hidden;margin-top:5px;min-width:80px;}
+.score-fill{height:100%;border-radius:2px;transition:width .6s ease;}
+
+/* ═══════════ FORMS ═══════════ */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;}
+@media(max-width:600px){.form-grid{grid-template-columns:1fr;}}
+.form-group{margin-bottom:1rem;}
+.form-label{
+  font-family:var(--font-mono);font-size:.68rem;letter-spacing:1px;
+  text-transform:uppercase;color:var(--muted2);display:block;margin-bottom:.4rem;
+}
+input,select,textarea{
+  width:100%;background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:.65rem .9rem;color:var(--text);
+  font-family:var(--font-mono);font-size:.8rem;outline:none;transition:.2s;
+}
+input:focus,select:focus,textarea:focus{border-color:var(--cyan);box-shadow:0 0 0 3px #00e5ff12;}
+textarea{min-height:75px;resize:vertical;}
+select option{background:var(--card);}
+.btn{
+  padding:.65rem 1.4rem;border-radius:10px;border:none;
+  cursor:pointer;font-family:var(--font-mono);font-size:.78rem;
+  font-weight:700;letter-spacing:.5px;transition:all .2s;
+  display:inline-flex;align-items:center;gap:6px;
+}
+.btn-primary{
+  background:linear-gradient(135deg,var(--cyan),var(--cyan2));
+  color:#000;
+}
+.btn-primary:hover{opacity:.9;transform:translateY(-1px);box-shadow:0 4px 20px #00e5ff30;}
+.btn-secondary{
+  background:var(--card2);color:var(--muted2);
+  border:1px solid var(--border2);
+}
+.btn-secondary:hover{border-color:var(--cyan);color:var(--cyan);}
+.btn-danger{background:#ff525218;color:var(--red);border:1px solid #ff525230;}
+.btn-danger:hover{background:#ff525228;}
+.form-row{display:flex;gap:.8rem;align-items:flex-end;flex-wrap:wrap;}
+
+/* ═══════════ ALERTS ═══════════ */
+.alert{padding:.8rem 1rem;border-radius:10px;font-family:var(--font-mono);
+  font-size:.75rem;margin-bottom:1rem;line-height:1.5;}
+.alert-success{background:#00e67610;border:1px solid #00e67630;color:var(--green);}
+.alert-error{background:#ff525210;border:1px solid #ff525230;color:var(--red);}
+.alert-info{background:#00e5ff10;border:1px solid #00e5ff30;color:var(--cyan);}
+.alert-warn{background:#ffd74010;border:1px solid #ffd74030;color:var(--yellow);}
+
+/* ═══════════ MONO TEXT ═══════════ */
+.mono{font-family:var(--font-mono);font-size:.75rem;color:var(--cyan);}
+.empty{color:var(--muted);font-family:var(--font-mono);font-size:.75rem;
+  text-align:center;padding:2.5rem 1rem;}
+
+/* ═══════════ SPINNER ═══════════ */
+.spin{display:inline-block;width:14px;height:14px;
+  border:2px solid var(--border);border-top-color:var(--cyan);
+  border-radius:50%;animation:spinning .7s linear infinite;}
+@keyframes spinning{to{transform:rotate(360deg)}}
+
+/* ═══════════ LIVE LOG ═══════════ */
+.live-log{
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:1rem;height:200px;overflow-y:auto;
+  font-family:var(--font-mono);font-size:.7rem;
+}
+.live-log::-webkit-scrollbar{width:4px;}
+.live-log::-webkit-scrollbar-thumb{background:var(--border2);}
+.log-ok{color:var(--green);}
+.log-info{color:var(--cyan);}
+.log-warn{color:var(--yellow);}
+.log-err{color:var(--red);}
+.log-line{padding:1px 0;}
+
+/* ═══════════ HERO ═══════════ */
+.hero{text-align:center;padding:4rem 2rem 3rem;position:relative;}
+.hero-eyebrow{
+  font-family:var(--font-mono);font-size:.68rem;letter-spacing:3px;
+  text-transform:uppercase;color:var(--cyan);margin-bottom:1rem;
+  display:inline-flex;align-items:center;gap:.5rem;
+}
+.hero-title{
+  font-size:clamp(2.2rem,6vw,4rem);font-weight:800;line-height:1.1;
+  margin-bottom:1rem;
+  background:linear-gradient(135deg,var(--text) 40%,var(--cyan) 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+}
+.hero-sub{font-size:1rem;color:var(--muted2);max-width:560px;margin:0 auto 2rem;line-height:1.7;}
+.hero-actions{display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;}
+
+/* ═══════════ FEATURES GRID ═══════════ */
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem;}
+.feature-card{
+  background:var(--card);border:1px solid var(--border);border-radius:14px;
+  padding:1.4rem;transition:.3s;
+}
+.feature-card:hover{border-color:var(--border2);transform:translateY(-3px);}
+.feature-icon{
+  width:42px;height:42px;border-radius:10px;margin-bottom:1rem;
+  display:flex;align-items:center;justify-content:center;font-size:1.2rem;
+}
+.feature-name{font-size:.95rem;font-weight:700;margin-bottom:.4rem;}
+.feature-desc{font-size:.78rem;color:var(--muted2);line-height:1.6;}
+
+/* ═══════════ ROBOT CARD ═══════════ */
+.robot-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;}
+.robot-card{
+  background:var(--card);border:1px solid var(--border);border-radius:14px;
+  padding:1.3rem;transition:.3s;cursor:pointer;
+}
+.robot-card:hover{border-color:var(--cyan);transform:translateY(-2px);box-shadow:0 4px 30px #00e5ff10;}
+.robot-card-header{display:flex;align-items:center;gap:.8rem;margin-bottom:.8rem;}
+.robot-avatar{
+  width:44px;height:44px;border-radius:12px;
+  background:linear-gradient(135deg,#00e5ff20,#00e67615);
+  border:1px solid var(--border2);
+  display:flex;align-items:center;justify-content:center;font-size:1.3rem;
+}
+.robot-name{font-size:.9rem;font-weight:700;}
+.robot-id{font-family:var(--font-mono);font-size:.62rem;color:var(--muted2);}
+.robot-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.5rem;margin-top:.8rem;}
+.robot-stat{text-align:center;background:var(--card2);border-radius:8px;padding:.5rem;}
+.robot-stat-val{font-size:.95rem;font-weight:700;}
+.robot-stat-lbl{font-family:var(--font-mono);font-size:.6rem;color:var(--muted2);}
+
+/* ═══════════ SIMULATOR ═══════════ */
+.sim-step{
+  display:flex;align-items:flex-start;gap:1rem;
+  padding:.8rem;border-radius:10px;margin-bottom:.5rem;
+  background:var(--card2);border:1px solid transparent;
+  font-family:var(--font-mono);font-size:.72rem;
+  transition:.3s;
+}
+.sim-step.active{border-color:var(--cyan);background:#00e5ff08;}
+.sim-step.done{border-color:#00e67630;background:#00e67608;}
+.sim-step.error{border-color:#ff525230;background:#ff525208;}
+.step-num{
+  min-width:24px;height:24px;border-radius:50%;
+  background:var(--border2);display:flex;align-items:center;
+  justify-content:center;font-size:.65rem;font-weight:700;
+  flex-shrink:0;transition:.3s;
+}
+.sim-step.done .step-num{background:var(--green);color:#000;}
+.sim-step.active .step-num{background:var(--cyan);color:#000;}
+.step-text{color:var(--muted2);line-height:1.5;}
+.sim-step.active .step-text,.sim-step.done .step-text{color:var(--text);}
+
+/* ═══════════ POPW ARTIFACT ═══════════ */
+.artifact-box{
+  background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:1rem;font-family:var(--font-mono);font-size:.7rem;
+  color:var(--muted2);line-height:1.8;max-height:220px;overflow-y:auto;
+}
+.artifact-box .ak{color:var(--cyan);}
+.artifact-box .av{color:var(--green);}
+.artifact-box .ab{color:var(--yellow);}
+
+/* ═══════════ CHART ═══════════ */
+.mini-chart{height:60px;display:flex;align-items:flex-end;gap:4px;}
+.bar{
+  flex:1;border-radius:4px 4px 0 0;min-width:8px;
+  transition:height .5s ease;position:relative;cursor:pointer;
+}
+.bar:hover::after{
+  content:attr(data-tip);position:absolute;bottom:calc(100% + 4px);
+  left:50%;transform:translateX(-50%);
+  background:var(--card2);border:1px solid var(--border2);
+  border-radius:6px;padding:3px 8px;font-size:.65rem;
+  white-space:nowrap;color:var(--text);font-family:var(--font-mono);
+}
+
+/* ═══════════ FAUCET ═══════════ */
+.faucet-card{
+  background:linear-gradient(135deg,#00e5ff08,#00e67608);
+  border:1px solid #00e5ff25;border-radius:14px;padding:1.5rem;
+  margin-bottom:1.5rem;
+}
+.faucet-title{font-size:1rem;font-weight:700;margin-bottom:.3rem;color:var(--cyan);}
+.faucet-sub{font-size:.78rem;color:var(--muted2);margin-bottom:1rem;line-height:1.6;}
+
+/* ═══════════ SUBNET INFO ═══════════ */
+.info-row{display:flex;justify-content:space-between;align-items:center;
+  padding:.65rem 0;border-bottom:1px solid var(--border);}
+.info-row:last-child{border-bottom:none;}
+.info-key{font-family:var(--font-mono);font-size:.72rem;color:var(--muted2);}
+.info-val{font-family:var(--font-mono);font-size:.75rem;color:var(--text);text-align:right;word-break:break-all;max-width:65%;}
+
+/* ═══════════ TOAST ═══════════ */
+#toast-container{position:fixed;bottom:1.5rem;right:1.5rem;z-index:999;
+  display:flex;flex-direction:column;gap:.5rem;}
+.toast{
+  padding:.8rem 1.2rem;border-radius:10px;border:1px solid;
+  font-family:var(--font-mono);font-size:.75rem;min-width:240px;
+  display:flex;align-items:center;gap:.5rem;
+  animation:toastIn .3s ease;
+  box-shadow:0 8px 32px rgba(0,0,0,.4);
+  backdrop-filter:blur(10px);
+}
+@keyframes toastIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+.toast-success{background:#00e67615;border-color:#00e67640;color:var(--green);}
+.toast-error{background:#ff525215;border-color:#ff525240;color:var(--red);}
+.toast-info{background:#00e5ff15;border-color:#00e5ff40;color:var(--cyan);}
+
+/* ═══════════ RESPONSIVE NAV ═══════════ */
+@media(max-width:600px){
+  nav{padding:0 1rem;}
+  .nav-logo{font-size:.75rem;}
+  .net-pill{display:none;}
+  .page{padding:1rem;}
+}
+.mt1{margin-top:.5rem;} .mt2{margin-top:1rem;} .mb1{margin-bottom:.5rem;} .mb2{margin-bottom:1rem;}
+.flex{display:flex;} .items-center{align-items:center;} .gap1{gap:.5rem;} .gap2{gap:1rem;}
+.justify-between{justify-content:space-between;} .flex-wrap{flex-wrap:wrap;}
+.w-full{width:100%;}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ TOAST CONTAINER ═══════════ -->
+<div id="toast-container"></div>
+
+<!-- ═══════════ WALLET MODAL ═══════════ -->
+<div class="modal-overlay" id="wallet-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-title">Connect Wallet</div>
+      <button class="modal-close" onclick="closeWalletModal()">✕</button>
+    </div>
+    <div id="modal-connect-view">
+      <p class="modal-sub">Connect your Substrate wallet to interact with the Konnex testnet. MemoryMesh AI supports all major Polkadot ecosystem wallets.</p>
+
+      <div class="wallet-option" onclick="connectWallet('subwallet')">
+        <div class="wallet-option-icon" style="background:#004d99">🔷</div>
+        <div>
+          <div class="wallet-option-name">SubWallet</div>
+          <div class="wallet-option-desc">Best for Konnex — native Substrate + EVM support</div>
+        </div>
+        <div class="wallet-option-badge badge-recommended">Recommended</div>
+      </div>
+
+      <div class="wallet-option" onclick="connectWallet('talisman')">
+        <div class="wallet-option-icon" style="background:#8b1a1a">🔴</div>
+        <div>
+          <div class="wallet-option-name">Talisman</div>
+          <div class="wallet-option-desc">Multichain wallet with deep Polkadot integration</div>
+        </div>
+        <div class="wallet-option-badge badge-popular">Popular</div>
+      </div>
+
+      <div class="wallet-option" onclick="connectWallet('polkadotjs')">
+        <div class="wallet-option-icon" style="background:#e6007a25;border:1px solid #e6007a40">🟣</div>
+        <div>
+          <div class="wallet-option-name">Polkadot{.js}</div>
+          <div class="wallet-option-desc">Official browser extension for Polkadot ecosystem</div>
+        </div>
+      </div>
+
+      <div class="wallet-option" onclick="connectWallet('fearless')">
+        <div class="wallet-option-icon" style="background:#ff6b3525">🟠</div>
+        <div>
+          <div class="wallet-option-name">Fearless Wallet</div>
+          <div class="wallet-option-desc">Mobile-first Polkadot wallet with browser extension</div>
+        </div>
+      </div>
+
+      <div class="divider-text">or enter address manually</div>
+
+      <div class="manual-input-group">
+        <label>Konnex / Substrate Address (SS58)</label>
+        <input id="manual-address" placeholder="5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY" maxlength="64"/>
+      </div>
+      <button class="connect-manual-btn" onclick="connectManual()">Connect Address</button>
+    </div>
+
+    <div id="modal-connected-view" style="display:none">
+      <div class="wallet-info-box">
+        <div class="wallet-info-row">
+          <span class="wallet-info-label">Wallet</span>
+          <span id="info-wallet-name">—</span>
+        </div>
+        <div class="wallet-info-row">
+          <span class="wallet-info-label">Address</span>
+          <span id="info-address" style="font-size:.65rem">—</span>
+        </div>
+        <div class="wallet-info-row">
+          <span class="wallet-info-label">Network</span>
+          <span>Konnex Testnet</span>
+        </div>
+        <div class="wallet-info-row">
+          <span class="wallet-info-label">testKNX Balance</span>
+          <span id="info-balance">Fetching…</span>
+        </div>
+      </div>
+      <button class="disconnect-btn" onclick="disconnectWallet()">Disconnect Wallet</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ NAV ═══════════ -->
+<nav>
+  <div class="nav-logo">Memory<span>Mesh</span> AI</div>
+  <div class="nav-right">
+    <div class="net-pill"><div class="pulse-dot"></div>Konnex Testnet</div>
+    <button class="wallet-btn" id="wallet-btn" onclick="openWalletModal()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+        <circle cx="12" cy="14" r="2"/>
+      </svg>
+      <span id="wallet-btn-text">Connect Wallet</span>
+    </button>
+  </div>
+</nav>
+
+<!-- ═══════════ TABS ═══════════ -->
+<div class="tabs-wrap">
+  <div class="tab active" onclick="switchTab('home')">Home</div>
+  <div class="tab" onclick="switchTab('overview')">Dashboard</div>
+  <div class="tab" onclick="switchTab('robots')">Robots</div>
+  <div class="tab" onclick="switchTab('tasks')">Tasks</div>
+  <div class="tab" onclick="switchTab('memory')">Memory</div>
+  <div class="tab" onclick="switchTab('leaderboard')">Leaderboard</div>
+  <div class="tab" onclick="switchTab('simulator')">Simulator</div>
+  <div class="tab" onclick="switchTab('faucet')">Faucet</div>
+  <div class="tab" onclick="switchTab('subnet')">Subnet Info</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: HOME
+══════════════════════════════════════════════════════════ -->
+<div id="page-home" class="page active">
+  <div class="hero">
+    <div class="hero-eyebrow">
+      <div class="pulse-dot"></div>
+      Live on Konnex Testnet
+    </div>
+    <h1 class="hero-title">Robot Identity &<br/>Memory Subnet</h1>
+    <p class="hero-sub">MemoryMesh AI gives every physical robot a persistent on-chain identity, verifiable task memory, and a live reputation score — powered by Proof-of-Physical-Work.</p>
+    <div class="hero-actions">
+      <button class="btn btn-primary" onclick="switchTab('simulator')">▶ Run Simulation</button>
+      <button class="btn btn-secondary" onclick="openWalletModal()">Connect Wallet</button>
+      <button class="btn btn-secondary" onclick="switchTab('overview')">View Dashboard</button>
+    </div>
+  </div>
+
+  <div style="max-width:1200px;margin:0 auto;padding:0 1rem 3rem;">
+    <div class="section-title">Core Primitives</div>
+    <div class="features">
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#00e5ff12;border:1px solid #00e5ff30;">🆔</div>
+        <div class="feature-name">RobotID</div>
+        <div class="feature-desc">Cryptographic on-chain identity derived from hardware fingerprint + owner address. Immutable. Portable across all Konnex subnet workloads.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#00e67612;border:1px solid #00e67630;">🧠</div>
+        <div class="feature-name">MemoryStore</div>
+        <div class="feature-desc">Append-only PoPW-verified task log per robot. Miners read memory history to generate better policies. Every mission improves the next.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#ffd74012;border:1px solid #ffd74030;">⭐</div>
+        <div class="feature-name">ReputationScore</div>
+        <div class="feature-desc">Weighted on-chain score updated after every verified PoPW event. Enterprises query reputation before hiring robots autonomously.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#ce93d812;border:1px solid #ce93d830;">⛏️</div>
+        <div class="feature-name">Memory-Enhanced Mining</div>
+        <div class="feature-desc">Miners query a robot's MemoryStore to select optimal execution strategies. Historical success patterns directly improve PoPW scores.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#ff980012;border:1px solid #ff980030;">✅</div>
+        <div class="feature-name">PoPW Validation</div>
+        <div class="feature-desc">Validators score real-world robot execution across safety, task match, and efficiency dimensions. Scores are written on-chain permanently.</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#ff525212;border:1px solid #ff525230;">🔗</div>
+        <div class="feature-name">Cross-Subnet Utility</div>
+        <div class="feature-desc">RobotID and MemoryStore can be consumed by Drone, RoboArm, and SLAM subnets — creating compounding network value across Konnex.</div>
+      </div>
+    </div>
+
+    <div class="section-title" style="margin-top:2rem;">How It Works</div>
+    <div class="card">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1px;background:var(--border);border-radius:10px;overflow:hidden;">
+        <div style="background:var(--card2);padding:1.2rem;text-align:center;">
+          <div style="font-size:1.5rem;margin-bottom:.5rem;">📋</div>
+          <div style="font-size:.8rem;font-weight:700;margin-bottom:.3rem;">1. Task Posted</div>
+          <div style="font-size:.7rem;color:var(--muted2);">Instruction hashed on-chain with RobotID attached</div>
+        </div>
+        <div style="background:var(--card2);padding:1.2rem;text-align:center;">
+          <div style="font-size:1.5rem;margin-bottom:.5rem;">🧠</div>
+          <div style="font-size:.8rem;font-weight:700;margin-bottom:.3rem;">2. Memory Query</div>
+          <div style="font-size:.7rem;color:var(--muted2);">Miner reads robot's history to generate optimal policy</div>
+        </div>
+        <div style="background:var(--card2);padding:1.2rem;text-align:center;">
+          <div style="font-size:1.5rem;margin-bottom:.5rem;">🤖</div>
+          <div style="font-size:.8rem;font-weight:700;margin-bottom:.3rem;">3. Execution</div>
+          <div style="font-size:.7rem;color:var(--muted2);">Robot executes policy — sensor data captured</div>
+        </div>
+        <div style="background:var(--card2);padding:1.2rem;text-align:center;">
+          <div style="font-size:1.5rem;margin-bottom:.5rem;">⚖️</div>
+          <div style="font-size:.8rem;font-weight:700;margin-bottom:.3rem;">4. PoPW Score</div>
+          <div style="font-size:.7rem;color:var(--muted2);">Validator scores safety, match & efficiency</div>
+        </div>
+        <div style="background:var(--card2);padding:1.2rem;text-align:center;">
+          <div style="font-size:1.5rem;margin-bottom:.5rem;">💾</div>
+          <div style="font-size:.8rem;font-weight:700;margin-bottom:.3rem;">5. Memory Write</div>
+          <div style="font-size:.7rem;color:var(--muted2);">Outcome appended — reputation updated on-chain</div>
+        </div>
+        <div style="background:var(--card2);padding:1.2rem;text-align:center;">
+          <div style="font-size:1.5rem;margin-bottom:.5rem;">💰</div>
+          <div style="font-size:.8rem;font-weight:700;margin-bottom:.3rem;">6. Settlement</div>
+          <div style="font-size:.7rem;color:var(--muted2);">testKNX rewards flow to miners & validators</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: DASHBOARD / OVERVIEW
+══════════════════════════════════════════════════════════ -->
+<div id="page-overview" class="page">
+  <div class="stats-row" id="overview-stats">
+    <div class="stat-card" style="--accent:var(--cyan)">
+      <div class="stat-label">Total Robots</div>
+      <div class="stat-value c-cyan" id="s-robots">0</div>
+      <div class="stat-sub">Registered identities</div>
+    </div>
+    <div class="stat-card" style="--accent:var(--green)">
+      <div class="stat-label">Tasks Completed</div>
+      <div class="stat-value c-green" id="s-completed">0</div>
+      <div class="stat-sub">PoPW verified</div>
+    </div>
+    <div class="stat-card" style="--accent:var(--yellow)">
+      <div class="stat-label">Open Tasks</div>
+      <div class="stat-value c-yellow" id="s-open">0</div>
+      <div class="stat-sub">Awaiting miners</div>
+    </div>
+    <div class="stat-card" style="--accent:var(--purple)">
+      <div class="stat-label">Memory Entries</div>
+      <div class="stat-value c-purple" id="s-memory">0</div>
+      <div class="stat-sub">PoPW logged</div>
+    </div>
+    <div class="stat-card" style="--accent:var(--green)">
+      <div class="stat-label">Avg PoPW Score</div>
+      <div class="stat-value c-green" id="s-avg-score">—</div>
+      <div class="stat-sub">Network average</div>
+    </div>
+    <div class="stat-card" style="--accent:var(--orange)">
+      <div class="stat-label">Total Rewarded</div>
+      <div class="stat-value c-orange" id="s-reward">0</div>
+      <div class="stat-sub">testKNX paid out</div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="section-title">Recent PoPW Events</div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Robot</th><th>Type</th><th>Score</th><th>Block</th><th>Status</th></tr></thead>
+        <tbody id="recent-popw"><tr><td colspan="5" class="empty">No events yet — run Simulator</td></tr></tbody></table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title">Live Subnet Log</div>
+      <div class="live-log" id="live-log"></div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="section-title">Task Type Distribution</div>
+      <div id="task-dist-chart" style="display:flex;gap:.5rem;flex-wrap:wrap;"></div>
+    </div>
+    <div class="card">
+      <div class="section-title">PoPW Score Trend</div>
+      <div class="mini-chart" id="score-trend"></div>
+      <div style="display:flex;justify-content:space-between;margin-top:.3rem;">
+        <span style="font-family:var(--font-mono);font-size:.6rem;color:var(--muted2)">Earliest</span>
+        <span style="font-family:var(--font-mono);font-size:.6rem;color:var(--muted2)">Latest</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: ROBOTS
+══════════════════════════════════════════════════════════ -->
+<div id="page-robots" class="page">
+  <div class="card">
+    <div class="section-title">Register New Robot</div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Owner Wallet Address</label>
+        <input id="r-owner" placeholder="5GrwvaEF5zXb26Fz9rcQpDWS57..." id="r-owner"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Robot Label</label>
+        <input id="r-label" placeholder="e.g. Drone Alpha"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Model</label>
+        <input id="r-model" placeholder="e.g. DJI-Mavic-3"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Serial Number</label>
+        <input id="r-serial" placeholder="e.g. DJI-SN-001"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Robot Type</label>
+        <select id="r-type">
+          <option value="drone">🚁 Drone</option>
+          <option value="arm">🦾 Robotic Arm</option>
+          <option value="quadruped">🐕 Quadruped</option>
+          <option value="humanoid">🤖 Humanoid</option>
+          <option value="mobile">🛞 Mobile Robot</option>
+          <option value="custom">⚙️ Custom</option>
+        </select>
+      </div>
+    </div>
+    <div id="r-alert"></div>
+    <div style="display:flex;gap:.8rem;flex-wrap:wrap;">
+      <button class="btn btn-primary" onclick="registerRobotUI()">Register Robot</button>
+      <button class="btn btn-secondary" onclick="autofillRobot()">Auto-fill Example</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Registered Robots</div>
+    <div id="robots-grid" class="robot-cards">
+      <div class="empty">No robots registered yet</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: TASKS
+══════════════════════════════════════════════════════════ -->
+<div id="page-tasks" class="page">
+  <div class="grid2">
+    <div class="card">
+      <div class="section-title">Post New Task</div>
+      <div class="form-group">
+        <label class="form-label">Task Instruction</label>
+        <textarea id="t-instr" placeholder="e.g. Navigate to zone B, scan for obstacles, return to base"></textarea>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">Task Type</label>
+          <select id="t-type">
+            <option value="navigation">🧭 Navigation</option>
+            <option value="manipulation">🦾 Manipulation</option>
+            <option value="slam">🗺️ SLAM / Mapping</option>
+            <option value="inspection">🔍 Inspection</option>
+            <option value="fleet">🚀 Fleet</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reward (testKNX)</label>
+          <input id="t-reward" type="number" value="10" min="0" step="0.5"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Poster Address</label>
+          <input id="t-poster" placeholder="5Grwva…"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Assign Robot (optional)</label>
+          <select id="t-robot-select"><option value="">Any robot</option></select>
+        </div>
+      </div>
+      <div id="t-alert"></div>
+      <div style="display:flex;gap:.8rem;flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="postTaskUI()">Post Task</button>
+        <button class="btn btn-secondary" onclick="autofillTask()">Auto-fill Example</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Task Stats</div>
+      <div id="task-stats-display">
+        <div class="empty">Post tasks to see stats</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">All Tasks</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Task ID</th><th>Type</th><th>Instruction</th><th>Reward</th><th>Status</th><th>PoPW</th><th>Actions</th></tr></thead>
+        <tbody id="tasks-table"><tr><td colspan="8" class="empty">No tasks posted yet</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: MEMORY
+══════════════════════════════════════════════════════════ -->
+<div id="page-memory" class="page">
+  <div class="card">
+    <div class="section-title">Query Robot Memory</div>
+    <div class="form-row">
+      <div style="flex:1;min-width:200px;">
+        <label class="form-label">Robot ID or Label</label>
+        <select id="m-robot-select" style="width:100%"><option value="">Select a robot</option></select>
+      </div>
+      <div style="width:160px;">
+        <label class="form-label">Task Type</label>
+        <select id="m-type">
+          <option value="">All types</option>
+          <option>navigation</option><option>manipulation</option>
+          <option>slam</option><option>inspection</option><option>fleet</option>
+        </select>
+      </div>
+      <div style="width:120px;">
+        <label class="form-label">Min Score</label>
+        <input id="m-min-score" type="number" value="0" min="0" max="1" step="0.1"/>
+      </div>
+      <div style="padding-bottom:1px;">
+        <button class="btn btn-primary" onclick="queryMemoryUI()" style="margin-top:1.35rem;">Query</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="memory-summary-cards" style="display:none;" class="stats-row">
+    <div class="stat-card" style="--accent:var(--cyan)"><div class="stat-label">Total Entries</div><div class="stat-value c-cyan" id="ms-total">0</div></div>
+    <div class="stat-card" style="--accent:var(--green)"><div class="stat-label">Avg PoPW</div><div class="stat-value c-green" id="ms-avg">0</div></div>
+    <div class="stat-card" style="--accent:var(--yellow)"><div class="stat-label">Best Score</div><div class="stat-value c-yellow" id="ms-best">0</div></div>
+    <div class="stat-card" style="--accent:var(--purple)"><div class="stat-label">Worst Score</div><div class="stat-value c-purple" id="ms-worst">0</div></div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Memory Entries</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Task ID</th><th>Type</th><th>Instruction</th><th>PoPW</th><th>Safety</th><th>Match</th><th>Eff.</th><th>Strategy</th><th>Block</th></tr></thead>
+        <tbody id="memory-table"><tr><td colspan="9" class="empty">Select a robot and click Query</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: LEADERBOARD
+══════════════════════════════════════════════════════════ -->
+<div id="page-leaderboard" class="page">
+  <div class="card">
+    <div class="section-title">Reputation Leaderboard</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Rank</th><th>Robot</th><th>Label</th><th>Score</th><th>Tier</th><th>Tasks</th><th>Success Rate</th><th>Trend</th></tr></thead>
+        <tbody id="lb-table"><tr><td colspan="8" class="empty">No ranked robots yet — run the Simulator</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: SIMULATOR
+══════════════════════════════════════════════════════════ -->
+<div id="page-simulator" class="page">
+  <div class="grid2">
+    <div>
+      <div class="card">
+        <div class="section-title">Simulation Config</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Robots</label>
+            <select id="sim-robots">
+              <option value="2">2 Robots</option>
+              <option value="3" selected>3 Robots</option>
+              <option value="5">5 Robots</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Tasks per Robot</label>
+            <select id="sim-tasks">
+              <option value="2">2 Tasks</option>
+              <option value="3" selected>3 Tasks</option>
+              <option value="5">5 Tasks</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Rounds</label>
+            <select id="sim-rounds">
+              <option value="1">1 Round</option>
+              <option value="2" selected>2 Rounds</option>
+              <option value="3">3 Rounds</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Noise Level</label>
+            <select id="sim-noise">
+              <option value="low">Low (mostly success)</option>
+              <option value="medium" selected>Medium (realistic)</option>
+              <option value="high">High (many failures)</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary w-full" onclick="runSimulation()" id="sim-btn">▶ Run Simulation</button>
+      </div>
+
+      <div class="card mt2">
+        <div class="section-title">Simulation Steps</div>
+        <div id="sim-steps">
+          <div class="sim-step" id="step-1"><div class="step-num">1</div><div class="step-text">Register robots on-chain</div></div>
+          <div class="sim-step" id="step-2"><div class="step-num">2</div><div class="step-text">Post tasks to subnet</div></div>
+          <div class="sim-step" id="step-3"><div class="step-num">3</div><div class="step-text">Miners generate policies</div></div>
+          <div class="sim-step" id="step-4"><div class="step-num">4</div><div class="step-text">Robots execute tasks (PoPW)</div></div>
+          <div class="sim-step" id="step-5"><div class="step-num">5</div><div class="step-text">Validators score PoPW artifacts</div></div>
+          <div class="sim-step" id="step-6"><div class="step-num">6</div><div class="step-text">Memory written on-chain</div></div>
+          <div class="sim-step" id="step-7"><div class="step-num">7</div><div class="step-text">Reputation scores updated</div></div>
+          <div class="sim-step" id="step-8"><div class="step-num">8</div><div class="step-text">Round 2: memory-enhanced policies</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <div class="section-title">Simulation Log</div>
+        <div class="live-log" id="sim-log" style="height:280px;">
+          <div class="log-line" style="color:var(--muted2)">Click "Run Simulation" to start…</div>
+        </div>
+      </div>
+
+      <div class="card mt2" id="sim-results-card" style="display:none;">
+        <div class="section-title">Results</div>
+        <div id="sim-results"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt2" id="sim-artifact-card" style="display:none;">
+    <div class="section-title">Latest PoPW Artifact</div>
+    <div class="artifact-box" id="sim-artifact"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: FAUCET
+══════════════════════════════════════════════════════════ -->
+<div id="page-faucet" class="page">
+  <div class="faucet-card">
+    <div class="faucet-title">🚰 testKNX Faucet</div>
+    <div class="faucet-sub">Get free testKNX tokens to interact with the Konnex testnet. Tokens have no monetary value and are for testing only.</div>
+    <div class="form-group">
+      <label class="form-label">Your Wallet Address</label>
+      <input id="faucet-addr" placeholder="5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"/>
+    </div>
+    <div style="display:flex;gap:.8rem;flex-wrap:wrap;">
+      <button class="btn btn-primary" onclick="requestFaucet()">Request testKNX</button>
+      <button class="btn btn-secondary" onclick="prefillWalletAddr()">Use Connected Wallet</button>
+    </div>
+    <div id="faucet-result" style="margin-top:1rem;"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="section-title">Faucet Info</div>
+      <div class="info-row"><div class="info-key">Network</div><div class="info-val">Konnex Testnet</div></div>
+      <div class="info-row"><div class="info-key">Token</div><div class="info-val">testKNX</div></div>
+      <div class="info-row"><div class="info-key">Amount per Request</div><div class="info-val">100 testKNX</div></div>
+      <div class="info-row"><div class="info-key">Cooldown</div><div class="info-val">24 hours</div></div>
+      <div class="info-row"><div class="info-key">Faucet Endpoint</div><div class="info-val mono" style="font-size:.6rem">https://faucet.testnet.konnex.world</div></div>
+    </div>
+    <div class="card">
+      <div class="section-title">Setup Guide</div>
+      <div style="font-size:.78rem;color:var(--muted2);line-height:2;">
+        <div>1. Install <span style="color:var(--cyan)">SubWallet</span> from subwallet.app</div>
+        <div>2. Create / import your Substrate account</div>
+        <div>3. Add Konnex Testnet network manually</div>
+        <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted);padding:.4rem .8rem;background:var(--surface);border-radius:6px;margin:.3rem 0">
+          RPC: wss://testnet-rpc1.konnex.world:39944
+        </div>
+        <div>4. Request testKNX from this faucet</div>
+        <div>5. Connect wallet above and start building</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: SUBNET INFO
+══════════════════════════════════════════════════════════ -->
+<div id="page-subnet" class="page">
+  <div class="grid2">
+    <div class="card">
+      <div class="section-title">Subnet Details</div>
+      <div class="info-row"><div class="info-key">Subnet Name</div><div class="info-val">MemoryMesh AI</div></div>
+      <div class="info-row"><div class="info-key">Version</div><div class="info-val mono">0.1.0</div></div>
+      <div class="info-row"><div class="info-key">Category</div><div class="info-val">Robot Identity & Memory</div></div>
+      <div class="info-row"><div class="info-key">Grant Tier</div><div class="info-val"><span class="badge bg-cyan">Spark — $25,000</span></div></div>
+      <div class="info-row"><div class="info-key">Status</div><div class="info-val"><span class="badge bg-green">🟢 Testnet Prototype</span></div></div>
+      <div class="info-row"><div class="info-key">License</div><div class="info-val mono">MIT (Open Source)</div></div>
+    </div>
+    <div class="card">
+      <div class="section-title">Network Config</div>
+      <div class="info-row"><div class="info-key">Network</div><div class="info-val">Konnex Testnet</div></div>
+      <div class="info-row"><div class="info-key">RPC (WebSocket)</div><div class="info-val mono" style="font-size:.62rem">wss://testnet-rpc1.konnex.world:39944</div></div>
+      <div class="info-row"><div class="info-key">RPC (HTTP)</div><div class="info-val mono" style="font-size:.62rem">https://testnet-rpc1.konnex.world</div></div>
+      <div class="info-row"><div class="info-key">Explorer</div><div class="info-val mono" style="font-size:.62rem">subnets.testnet.konnex.world</div></div>
+      <div class="info-row"><div class="info-key">Consensus</div><div class="info-val">Proof-of-Physical-Work (PoPW)</div></div>
+      <div class="info-row"><div class="info-key">Substrate</div><div class="info-val">Rust Pallets (MIT)</div></div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="section-title">PoPW Scoring Weights</div>
+      <div class="info-row">
+        <div class="info-key">Safety</div>
+        <div class="info-val">
+          <div style="display:flex;align-items:center;gap:.5rem;">
+            <span class="c-green">40%</span>
+            <div class="score-bar" style="flex:1"><div class="score-fill" style="width:40%;background:var(--green)"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="info-row">
+        <div class="info-key">Task Match</div>
+        <div class="info-val">
+          <div style="display:flex;align-items:center;gap:.5rem;">
+            <span class="c-cyan">35%</span>
+            <div class="score-bar" style="flex:1"><div class="score-fill" style="width:35%;background:var(--cyan)"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="info-row">
+        <div class="info-key">Efficiency</div>
+        <div class="info-val">
+          <div style="display:flex;align-items:center;gap:.5rem;">
+            <span class="c-yellow">25%</span>
+            <div class="score-bar" style="flex:1"><div class="score-fill" style="width:25%;background:var(--yellow)"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="info-row"><div class="info-key">Accept Threshold</div><div class="info-val c-green">≥ 0.50</div></div>
+      <div class="info-row"><div class="info-key">Decay Factor</div><div class="info-val mono">0.95 (EMA)</div></div>
+    </div>
+    <div class="card">
+      <div class="section-title">Team</div>
+      <div class="info-row"><div class="info-key">Founder</div><div class="info-val">Muhammad Kashif Ali</div></div>
+      <div class="info-row"><div class="info-key">Email</div><div class="info-val mono" style="font-size:.65rem">mkashifali.kcp@gmail.com</div></div>
+      <div class="info-row"><div class="info-key">Twitter</div><div class="info-val mono">@mkashifalikcp</div></div>
+      <div class="info-row"><div class="info-key">GitHub</div><div class="info-val mono">github.com/Kashif130</div></div>
+      <div class="info-row"><div class="info-key">Repo</div><div class="info-val mono" style="font-size:.65rem">Kashif130/memorymesh-subnet</div></div>
+      <div class="info-row"><div class="info-key">Grant Applied</div><div class="info-val"><span class="badge bg-yellow">Spark $25K</span></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Reputation Tiers</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem;">
+      <div style="text-align:center;padding:1rem;background:var(--card2);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:1.5rem;margin-bottom:.3rem;">👑</div>
+        <div style="font-size:.9rem;font-weight:700;color:var(--yellow)">Elite</div>
+        <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted2)">Score ≥ 0.85</div>
+      </div>
+      <div style="text-align:center;padding:1rem;background:var(--card2);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:1.5rem;margin-bottom:.3rem;">⭐</div>
+        <div style="font-size:.9rem;font-weight:700;color:var(--green)">Proven</div>
+        <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted2)">Score ≥ 0.70</div>
+      </div>
+      <div style="text-align:center;padding:1rem;background:var(--card2);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:1.5rem;margin-bottom:.3rem;">🔵</div>
+        <div style="font-size:.9rem;font-weight:700;color:var(--cyan)">Active</div>
+        <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted2)">Score ≥ 0.50</div>
+      </div>
+      <div style="text-align:center;padding:1rem;background:var(--card2);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:1.5rem;margin-bottom:.3rem;">🟣</div>
+        <div style="font-size:.9rem;font-weight:700;color:var(--purple)">Novice</div>
+        <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted2)">Score ≥ 0.25</div>
+      </div>
+      <div style="text-align:center;padding:1rem;background:var(--card2);border-radius:10px;border:1px solid var(--border);">
+        <div style="font-size:1.5rem;margin-bottom:.3rem;">⚪</div>
+        <div style="font-size:.9rem;font-weight:700;color:var(--muted2)">Unrated</div>
+        <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted2)">Score < 0.25</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     JAVASCRIPT — Full State Engine
+══════════════════════════════════════════════════════════ -->
+<script>
+'use strict';
+// ════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════
+const DB = { robots:[], tasks:[], memory:[], reputation:{} };
+const WALLET = { connected:false, address:null, name:null, balance:null };
+
+// ════════════════════════════════════════════
+//  CONSTANTS
+// ════════════════════════════════════════════
+const W = { safety:.40, match:.35, efficiency:.25 };
+const DECAY = .95;
+const TIERS = [[.85,'Elite','👑','yellow'],[.70,'Proven','⭐','green'],
+               [.50,'Active','🔵','cyan'],[.25,'Novice','🟣','purple'],[0,'Unrated','⚪','muted2']];
+const STRATS = {
+  navigation:  ['waypoint_optimal','obstacle_avoidance','speed_optimised','energy_efficient'],
+  manipulation:['precision_grasp','force_controlled','vision_guided','adaptive_grip'],
+  slam:        ['loop_closure','feature_dense','lidar_primary','visual_inertial'],
+  inspection:  ['full_coverage','anomaly_focused','thermal_priority','structured_grid'],
+  fleet:       ['centralised','distributed','role_specialised','dynamic_rebalance'],
+};
+const ROBOT_EMOJIS = {drone:'🚁',arm:'🦾',quadruped:'🐕',humanoid:'🤖',mobile:'🛞',custom:'⚙️'};
+
+let blockNum = 10000;
+
+// ════════════════════════════════════════════
+//  HELPERS
+// ════════════════════════════════════════════
+const rand = (a,b) => Math.random()*(b-a)+a;
+const pick = arr => arr[Math.floor(Math.random()*arr.length)];
+const now  = () => new Date().toISOString();
+const shortId = id => id ? id.slice(0,16)+'…' : '—';
+const pct = (v,d=1) => (v*100).toFixed(d)+'%';
+const nextBlock = () => blockNum += Math.floor(rand(1,4));
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+function hash(str){
+  let h = 0x811c9dc5|0;
+  for(let i=0;i<str.length;i++) h = Math.imul(h^str.charCodeAt(i),0x01000193)|0;
+  const abs = n => (n>>>0).toString(16).padStart(8,'0');
+  return '0x'+abs(h)+abs(Math.imul(h,0xdeadbeef)|0)+abs(Math.imul(h,0xcafebabe)|0)+abs(Math.imul(h,0xf00dcafe)|0);
+}
+
+function tierInfo(score){
+  for(const [t,l,ic,cl] of TIERS) if(score>=t) return {label:l,icon:ic,cls:cl};
+  return {label:'Unrated',icon:'⚪',cls:'muted2'};
+}
+function tierBadge(score){
+  const {label,icon,cls} = tierInfo(score);
+  const map={yellow:'bg-yellow',green:'bg-green',cyan:'bg-cyan',purple:'bg-purple',muted2:'bg-muted'};
+  return `<span class="badge ${map[cls]}">${icon} ${label}</span>`;
+}
+function statusBadge(s){
+  const m={open:'bg-cyan',assigned:'bg-yellow',executing:'bg-yellow',completed:'bg-green',failed:'bg-red'};
+  return `<span class="badge ${m[s]||'bg-muted'}">${s}</span>`;
+}
+function scoreColor(v){ return v>=.8?'var(--green)':v>=.5?'var(--yellow)':'var(--red)'; }
+function scoreBarHTML(v,color){
+  const c = color||scoreColor(v);
+  return `<div class="score-bar"><div class="score-fill" style="width:${(v*100).toFixed(0)}%;background:${c}"></div></div>`;
+}
+
+// ════════════════════════════════════════════
+//  CORE — RobotID
+// ════════════════════════════════════════════
+function registerRobotCore(owner, hw, label, type='drone'){
+  if(!owner) throw new Error('owner_address is required');
+  const hwStr = JSON.stringify(Object.fromEntries(Object.entries(hw||{}).sort()));
+  const hwHash = hash(hwStr+owner).slice(2,66);
+  const robotId = hash('memorymesh::'+hwHash+'::'+owner.toLowerCase());
+  if(DB.robots.find(r=>r.hardware_hash===hwHash)) throw new Error('Hardware fingerprint already registered');
+  const robot = { robot_id:robotId, hardware_hash:hwHash, owner_address:owner,
+                  registered_at:now(), metadata:{label:label||'Robot', type:type||'drone'} };
+  DB.robots.push(robot);
+  DB.reputation[robotId] = { score:0, total_tasks:0, successful_tasks:0, last_updated:now() };
+  return robot;
+}
+
+// ════════════════════════════════════════════
+//  CORE — Tasks
+// ════════════════════════════════════════════
+function postTaskCore(instr, type, reward, poster, robotId=null){
+  if(!instr.trim()) throw new Error('instruction cannot be empty');
+  if(!['navigation','manipulation','slam','inspection','fleet'].includes(type)) throw new Error('Invalid task type');
+  if(reward<0) throw new Error('reward must be >= 0');
+  const taskId = hash(instr+'::'+poster+'::'+Math.random());
+  const task = { task_id:taskId, robot_id:robotId, task_type:type, instruction:instr.trim(),
+                 reward_knx:reward, poster_address:poster, status:'open',
+                 created_at:now(), completed_at:null, policy_hash:null, block_number:null, popw_score:null };
+  DB.tasks.push(task);
+  return task;
+}
+
+// ════════════════════════════════════════════
+//  CORE — Policy Generation (Miner)
+// ════════════════════════════════════════════
+function generatePolicy(task, robotId){
+  const strats = STRATS[task.task_type]||['default'];
+  const history = DB.memory.filter(m=>m.robot_id===robotId && m.task_type===task.task_type);
+  let strategy = pick(strats), memEnhanced=false, memUsed=0;
+  if(history.length>0){
+    const ss={};
+    for(const e of history){ const s=(e.telemetry||{}).strategy||'?'; ss[s]=(ss[s]||[]).concat(e.popw_score); }
+    let best='',ba=0;
+    for(const[s,sc] of Object.entries(ss)){ const a=sc.reduce((x,y)=>x+y,0)/sc.length; if(a>ba){ba=a;best=s;} }
+    if(best) strategy=best;
+    memEnhanced=true; memUsed=history.length;
+  }
+  return { strategy, task_type:task.task_type, memory_enhanced:memEnhanced,
+           memory_entries_used:memUsed,
+           parameters:{ max_velocity:+rand(.3,1).toFixed(2), safety_margin:+rand(.1,.5).toFixed(2),
+                         retry_limit:Math.floor(rand(2,5)), timeout_s:Math.floor(rand(60,300)) } };
+}
+
+// ════════════════════════════════════════════
+//  CORE — PoPW Scoring (Validator)
+// ════════════════════════════════════════════
+function scorePoPW(tele, taskType){
+  let safety=1;
+  if(tele.collision_detected)       safety-=.50;
+  if(tele.emergency_stop_triggered) safety-=.30;
+  if(tele.boundary_violated)        safety-=.20;
+  const vLim={navigation:1.5,manipulation:.5,fleet:2}[taskType]||1;
+  if(tele.max_velocity_observed>vLim) safety-=Math.min(.2,(tele.max_velocity_observed-vLim)/vLim*.2);
+  safety=Math.max(0,safety);
+
+  let match=tele.completion_confirmed?1:(tele.completion_pct||50)/100;
+  if(taskType==='slam'        && !tele.map_generated)    match*=.6;
+  if(taskType==='manipulation'&& !tele.object_grasped)   match*=.7;
+  if(taskType==='inspection'  &&(tele.coverage_pct||100)<80) match*=.8;
+  match=Math.min(1,Math.max(0,match));
+
+  let eff=1;
+  if(tele.elapsed_s && tele.timeout_s){ const r=tele.elapsed_s/tele.timeout_s; if(r>1) eff-=Math.min(.4,(r-1)*.4); else if(r>.8) eff-=.10; }
+  eff-=Math.min(.3,(tele.retry_count||0)*.10);
+  if(tele.energy_efficient) eff=Math.min(1,eff+.05);
+  eff=Math.max(0,eff);
+
+  const popw = +( safety*W.safety + match*W.match + eff*W.efficiency ).toFixed(4);
+  return { popw, safety:+safety.toFixed(4), match:+match.toFixed(4), eff:+eff.toFixed(4) };
+}
+
+function simulateTelemetry(taskType, round2=false){
+  const n = round2 ? .03 : .08;
+  return {
+    completion_confirmed:    Math.random()>n*2,
+    completion_pct:          +rand(round2?80:60,100).toFixed(1),
+    collision_detected:      Math.random()<n,
+    emergency_stop_triggered:Math.random()<n*.4,
+    boundary_violated:       Math.random()<n*.5,
+    max_velocity_observed:   +rand(.2,round2?1.1:1.6).toFixed(2),
+    elapsed_s:               +rand(10,round2?180:240).toFixed(1),
+    timeout_s:240, retry_count:Math.floor(rand(0,round2?1.5:3)),
+    energy_efficient:        Math.random()>(round2?.3:.5),
+    map_generated:           Math.random()>(round2?.05:.1),
+    object_grasped:          Math.random()>(round2?.05:.12),
+    coverage_pct:            +rand(round2?85:70,100).toFixed(1),
+  };
+}
+
+function writeMemory(robotId, taskId, taskType, instruction, strategy, scores, validatorAddr, block, telemetry){
+  const entry={ entry_id:DB.memory.length+1, robot_id:robotId, task_id:taskId,
+    task_type:taskType, instruction, popw_score:scores.popw,
+    safety_score:scores.safety, task_match:scores.match, efficiency:scores.eff,
+    validator_addr:validatorAddr, block_number:block, executed_at:now(),
+    telemetry:{...telemetry, strategy} };
+  DB.memory.push(entry);
+  updateRep(robotId, scores, scores.popw>=.5);
+  return entry;
+}
+
+function updateRep(robotId, scores, ok){
+  const rep=DB.reputation[robotId];
+  if(!rep) return;
+  const raw=scores.safety*W.safety+scores.match*W.match+scores.eff*W.efficiency;
+  rep.score=+Math.min(1,Math.max(0, DECAY*rep.score+(1-DECAY)*raw )).toFixed(4);
+  rep.total_tasks++; if(ok) rep.successful_tasks++;
+  rep.last_updated=now();
+}
+
+// ════════════════════════════════════════════
+//  WALLET
+// ════════════════════════════════════════════
+function openWalletModal(){
+  document.getElementById('wallet-modal').classList.add('open');
+  if(WALLET.connected) showConnectedView();
+  else showConnectView();
+}
+function closeWalletModal(){ document.getElementById('wallet-modal').classList.remove('open'); }
+
+function showConnectView(){
+  document.getElementById('modal-title').textContent='Connect Wallet';
+  document.getElementById('modal-connect-view').style.display='block';
+  document.getElementById('modal-connected-view').style.display='none';
+}
+function showConnectedView(){
+  document.getElementById('modal-title').textContent='Wallet Connected';
+  document.getElementById('modal-connect-view').style.display='none';
+  document.getElementById('modal-connected-view').style.display='block';
+  document.getElementById('info-wallet-name').textContent=WALLET.name||'—';
+  document.getElementById('info-address').textContent=WALLET.address||'—';
+  const bal = WALLET.balance!=null ? WALLET.balance+' testKNX' : '—';
+  document.getElementById('info-balance').textContent=bal;
+}
+
+async function connectWallet(name){
+  // Try to detect real extension; fall back to simulated connection for testnet demo
+  const names = { subwallet:'SubWallet', talisman:'Talisman', polkadotjs:'Polkadot{.js}', fearless:'Fearless Wallet' };
+  const extKeys = { subwallet:'subwallet-js', talisman:'talisman', polkadotjs:'polkadot-js', fearless:'fearless' };
+  const ext = window.injectedWeb3?.[extKeys[name]];
+
+  if(ext){
+    try{
+      await ext.enable('MemoryMesh AI');
+      const accounts = await ext.accounts?.get?.() || [];
+      if(accounts.length>0){
+        setWalletConnected(accounts[0].address, names[name]);
+        toast(`Connected via ${names[name]}`, 'success');
+        closeWalletModal(); return;
+      }
+    }catch(e){ /* fall through */ }
+  }
+
+  // Extension not installed — simulate with a testnet address
+  const demoAddrs = {
+    subwallet:  '5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY',
+    talisman:   '5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty',
+    polkadotjs: '5FLSigC9HGRKVhB9FiEo4Y3koPsNmBmLJbpXg2mp1hXcS59Y',
+    fearless:   '5DAAnrj7VHTznn2AWBemMuyBwZWs6FNFjdyVXUeYum3PTXFy',
+  };
+  setWalletConnected(demoAddrs[name]||demoAddrs.subwallet, names[name]+' (Demo)');
+  toast(`${names[name]} not detected — using demo address. Install the extension for real connection.`, 'info');
+  closeWalletModal();
+}
+
+function connectManual(){
+  const addr = document.getElementById('manual-address').value.trim();
+  if(!addr || addr.length < 10){ toast('Please enter a valid Substrate address','error'); return; }
+  setWalletConnected(addr, 'Manual');
+  toast('Address connected manually','success');
+  closeWalletModal();
+}
+
+function setWalletConnected(address, name){
+  WALLET.connected=true; WALLET.address=address; WALLET.name=name;
+  WALLET.balance = +(rand(50,500)).toFixed(2);
+  const btn=document.getElementById('wallet-btn');
+  btn.classList.add('connected');
+  document.getElementById('wallet-btn-text').textContent=address.slice(0,6)+'…'+address.slice(-4);
+  // Prefill forms with connected address
+  const fields=['r-owner','t-poster','faucet-addr'];
+  fields.forEach(id=>{ const el=document.getElementById(id); if(el&&!el.value) el.value=address; });
+  addLog(`Wallet connected: ${name} — ${address.slice(0,16)}…`,'ok');
+}
+
+function disconnectWallet(){
+  WALLET.connected=false; WALLET.address=null; WALLET.name=null; WALLET.balance=null;
+  const btn=document.getElementById('wallet-btn');
+  btn.classList.remove('connected');
+  document.getElementById('wallet-btn-text').textContent='Connect Wallet';
+  closeWalletModal();
+  toast('Wallet disconnected','info');
+}
+
+function prefillWalletAddr(){
+  if(!WALLET.connected){ toast('Connect wallet first','error'); return; }
+  document.getElementById('faucet-addr').value=WALLET.address;
+}
+
+// ════════════════════════════════════════════
+//  TOAST
+// ════════════════════════════════════════════
+function toast(msg, type='info'){
+  const c=document.getElementById('toast-container');
+  const el=document.createElement('div');
+  el.className=`toast toast-${type}`;
+  const icons={success:'✅',error:'❌',info:'ℹ️'};
+  el.innerHTML=`<span>${icons[type]||'ℹ️'}</span><span>${msg}</span>`;
+  c.appendChild(el);
+  setTimeout(()=>{ el.style.animation='toastIn .3s ease reverse'; setTimeout(()=>el.remove(),300); },4000);
+}
+
+// ════════════════════════════════════════════
+//  TAB SWITCH
+// ════════════════════════════════════════════
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>{
+    const map={home:'Home',overview:'Dashboard',robots:'Robots',tasks:'Tasks',
+               memory:'Memory',leaderboard:'Leaderboard',simulator:'Simulator',
+               faucet:'Faucet',subnet:'Subnet Info'};
+    t.classList.toggle('active', t.textContent===map[name]);
+  });
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  const pg = document.getElementById('page-'+name);
+  if(pg) pg.classList.add('active');
+  refreshPage(name);
+}
+function refreshPage(name){
+  if(name==='overview')    renderOverview();
+  if(name==='robots')      renderRobots();
+  if(name==='tasks')       renderTasks();
+  if(name==='leaderboard') renderLeaderboard();
+  if(name==='memory')      updateRobotSelects();
+}
+
+// ════════════════════════════════════════════
+//  LIVE LOG
+// ════════════════════════════════════════════
+function addLog(msg, type='info'){
+  const el=document.getElementById('live-log');
+  if(!el) return;
+  const d=document.createElement('div');
+  d.className=`log-line log-${type}`;
+  d.textContent=`[${new Date().toTimeString().slice(0,8)}] ${msg}`;
+  el.appendChild(d); el.scrollTop=el.scrollHeight;
+  if(el.children.length>200) el.removeChild(el.children[0]);
+}
+function simLog(msg, type='info'){
+  const el=document.getElementById('sim-log');
+  if(!el) return;
+  const d=document.createElement('div');
+  d.className=`log-line log-${type}`;
+  d.textContent=msg; el.appendChild(d); el.scrollTop=el.scrollHeight;
+}
+
+// ════════════════════════════════════════════
+//  RENDER — OVERVIEW
+// ════════════════════════════════════════════
+function renderOverview(){
+  const completed=DB.tasks.filter(t=>t.status==='completed').length;
+  const open     =DB.tasks.filter(t=>t.status==='open').length;
+  const totalRew =DB.tasks.filter(t=>t.status==='completed').reduce((s,t)=>s+t.reward_knx,0);
+  const avgScore =DB.memory.length>0?(DB.memory.reduce((s,m)=>s+m.popw_score,0)/DB.memory.length):null;
+
+  document.getElementById('s-robots').textContent=DB.robots.length;
+  document.getElementById('s-completed').textContent=completed;
+  document.getElementById('s-open').textContent=open;
+  document.getElementById('s-memory').textContent=DB.memory.length;
+  document.getElementById('s-avg-score').textContent=avgScore!=null?avgScore.toFixed(3):'—';
+  document.getElementById('s-reward').textContent=totalRew.toFixed(1);
+
+  // Recent PoPW
+  const tbody=document.getElementById('recent-popw');
+  const recent=[...DB.memory].reverse().slice(0,8);
+  if(!recent.length){ tbody.innerHTML='<tr><td colspan="5" class="empty">No PoPW events yet — run Simulator</td></tr>'; }
+  else {
+    tbody.innerHTML=recent.map(m=>{
+      const r=DB.robots.find(x=>x.robot_id===m.robot_id);
+      const label=r?.metadata?.label||shortId(m.robot_id);
+      const task=DB.tasks.find(t=>t.task_id===m.task_id);
+      const sc=m.popw_score;
+      return `<tr>
+        <td>${label}</td>
+        <td><span class="badge bg-cyan">${m.task_type}</span></td>
+        <td>
+          <span style="color:${scoreColor(sc)};font-weight:700;font-family:var(--font-mono)">${sc.toFixed(3)}</span>
+          ${scoreBarHTML(sc)}
+        </td>
+        <td class="mono">#${m.block_number}</td>
+        <td>${task?statusBadge(task.status):'—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Task dist
+  const dist={};
+  for(const t of DB.tasks) dist[t.task_type]=(dist[t.task_type]||0)+1;
+  const distEl=document.getElementById('task-dist-chart');
+  if(!Object.keys(dist).length) distEl.innerHTML='<div class="empty" style="padding:.5rem;font-size:.75rem">No tasks yet</div>';
+  else {
+    const icons={navigation:'🧭',manipulation:'🦾',slam:'🗺️',inspection:'🔍',fleet:'🚀'};
+    const clrs={navigation:'var(--cyan)',manipulation:'var(--purple)',slam:'var(--green)',inspection:'var(--yellow)',fleet:'var(--orange)'};
+    distEl.innerHTML=Object.entries(dist).map(([type,cnt])=>`
+      <div style="flex:1;min-width:100px;background:var(--card2);border-radius:8px;padding:.7rem;text-align:center;border:1px solid var(--border)">
+        <div style="font-size:1.2rem">${icons[type]||'📌'}</div>
+        <div style="font-size:1.3rem;font-weight:800;color:${clrs[type]||'var(--text)'};font-family:var(--font-mono)">${cnt}</div>
+        <div style="font-size:.65rem;color:var(--muted2)">${type}</div>
+      </div>`).join('');
+  }
+
+  // Score trend
+  const trendEl=document.getElementById('score-trend');
+  const mem20=[...DB.memory].slice(-20);
+  if(!mem20.length){ trendEl.innerHTML='<div class="empty" style="padding:.5rem;font-size:.7rem">No data</div>'; }
+  else {
+    trendEl.innerHTML=mem20.map(m=>{
+      const h=Math.max(8,Math.round(m.popw_score*55));
+      const c=scoreColor(m.popw_score);
+      return `<div class="bar" style="height:${h}px;background:${c};opacity:.8"
+        data-tip="${m.task_type}: ${m.popw_score.toFixed(3)}"></div>`;
+    }).join('');
+  }
+}
+
+// ════════════════════════════════════════════
+//  RENDER — ROBOTS
+// ════════════════════════════════════════════
+function renderRobots(){
+  const grid=document.getElementById('robots-grid');
+  if(!DB.robots.length){ grid.innerHTML='<div class="empty">No robots registered yet</div>'; return; }
+  grid.innerHTML=DB.robots.map(r=>{
+    const rep=DB.reputation[r.robot_id]||{score:0,total_tasks:0,successful_tasks:0};
+    const {label,icon}=tierInfo(rep.score);
+    const type=r.metadata?.type||'drone';
+    const emoji=ROBOT_EMOJIS[type]||'🤖';
+    const mem=DB.memory.filter(m=>m.robot_id===r.robot_id).length;
+    const succ=rep.total_tasks>0?((rep.successful_tasks/rep.total_tasks)*100).toFixed(0)+'%':'—';
+    return `<div class="robot-card" onclick="viewRobotMemory('${r.robot_id}')">
+      <div class="robot-card-header">
+        <div class="robot-avatar">${emoji}</div>
+        <div>
+          <div class="robot-name">${r.metadata?.label||'Robot'}</div>
+          <div class="robot-id">${shortId(r.robot_id)}</div>
+        </div>
+        <div style="margin-left:auto">${tierBadge(rep.score)}</div>
+      </div>
+      ${scoreBarHTML(rep.score)}
+      <div class="robot-stats mt1">
+        <div class="robot-stat"><div class="robot-stat-val c-green">${rep.score.toFixed(3)}</div><div class="robot-stat-lbl">Score</div></div>
+        <div class="robot-stat"><div class="robot-stat-val c-cyan">${rep.total_tasks}</div><div class="robot-stat-lbl">Tasks</div></div>
+        <div class="robot-stat"><div class="robot-stat-val c-purple">${mem}</div><div class="robot-stat-lbl">Memory</div></div>
+      </div>
+      <div style="font-family:var(--font-mono);font-size:.6rem;color:var(--muted2);margin-top:.5rem;">
+        ${r.owner_address.slice(0,12)}… · ${r.metadata?.type||'drone'} · Success: ${succ}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function viewRobotMemory(robotId){
+  document.getElementById('m-robot-select').value=robotId;
+  switchTab('memory');
+  setTimeout(queryMemoryUI,100);
+}
+
+// ════════════════════════════════════════════
+//  RENDER — TASKS
+// ════════════════════════════════════════════
+function renderTasks(){
+  updateRobotSelects();
+  const tbody=document.getElementById('tasks-table');
+  if(!DB.tasks.length){ tbody.innerHTML='<tr><td colspan="8" class="empty">No tasks yet</td></tr>'; return; }
+  const sorted=[...DB.tasks].reverse();
+  tbody.innerHTML=sorted.map((t,i)=>{
+    const sc = t.popw_score!=null
+      ? `<span style="color:${scoreColor(t.popw_score)};font-family:var(--font-mono);font-weight:700">${t.popw_score.toFixed(3)}</span>`
+      : '—';
+    const actions = t.status==='open'
+      ? `<button class="btn btn-secondary" style="padding:3px 8px;font-size:.65rem" onclick="quickRunTask('${t.task_id}')">▶ Run</button>`
+      : '';
+    return `<tr>
+      <td style="color:var(--muted2);font-family:var(--font-mono);font-size:.7rem">${DB.tasks.length-i}</td>
+      <td class="mono">${shortId(t.task_id)}</td>
+      <td><span class="badge bg-cyan">${t.task_type}</span></td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.instruction}">${t.instruction}</td>
+      <td class="c-yellow" style="font-family:var(--font-mono)">${t.reward_knx} KNX</td>
+      <td>${statusBadge(t.status)}</td>
+      <td>${sc}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join('');
+
+  // Stats
+  const stats=document.getElementById('task-stats-display');
+  const total=DB.tasks.length;
+  if(!total){ stats.innerHTML='<div class="empty">Post tasks to see stats</div>'; return; }
+  const byStatus={};
+  for(const t of DB.tasks) byStatus[t.status]=(byStatus[t.status]||0)+1;
+  stats.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;">
+    ${Object.entries(byStatus).map(([s,c])=>`
+      <div style="background:var(--card2);border-radius:8px;padding:.7rem;text-align:center;">
+        <div style="font-size:1.3rem;font-weight:800;font-family:var(--font-mono)">${c}</div>
+        <div>${statusBadge(s)}</div>
+      </div>`).join('')}
+  </div>
+  <div style="margin-top:.8rem;font-family:var(--font-mono);font-size:.7rem;color:var(--muted2)">
+    Total reward pool: <span style="color:var(--yellow)">${DB.tasks.reduce((s,t)=>s+t.reward_knx,0).toFixed(1)} testKNX</span>
+  </div>`;
+}
+
+function quickRunTask(taskId){
+  const task=DB.tasks.find(t=>t.task_id===taskId);
+  if(!task||task.status!=='open') return;
+  const robot = DB.robots[0];
+  if(!robot){ toast('Register a robot first','error'); return; }
+  const policy=generatePolicy(task, robot.robot_id);
+  const ph=hash(JSON.stringify(policy));
+  task.status='assigned'; task.robot_id=robot.robot_id; task.policy_hash=ph;
+  task.status='executing';
+  const tele=simulateTelemetry(task.task_type,false);
+  const scores=scorePoPW(tele,task.task_type);
+  const block=nextBlock();
+  writeMemory(robot.robot_id,task.task_id,task.task_type,task.instruction,
+    policy.strategy,scores,WALLET.address||'5FHne…',block,tele);
+  task.popw_score=scores.popw;
+  task.status=scores.popw>=.5?'completed':'failed';
+  if(task.status==='completed') task.completed_at=now();
+  task.block_number=block;
+  addLog(`PoPW: [${task.task_type}] score=${scores.popw.toFixed(3)} ${task.status==='completed'?'✅':'❌'}`,'ok');
+  toast(`Task completed — PoPW: ${scores.popw.toFixed(3)}`,'success');
+  renderTasks(); renderOverview();
+}
+
+// ════════════════════════════════════════════
+//  RENDER — MEMORY
+// ════════════════════════════════════════════
+function updateRobotSelects(){
+  const selects=['m-robot-select','t-robot-select'];
+  selects.forEach(id=>{
+    const sel=document.getElementById(id);
+    if(!sel) return;
+    const cur=sel.value;
+    const base=id==='t-robot-select'?'<option value="">Any robot</option>':'<option value="">Select a robot</option>';
+    sel.innerHTML=base+DB.robots.map(r=>`<option value="${r.robot_id}">${r.metadata?.label||shortId(r.robot_id)}</option>`).join('');
+    if(cur) sel.value=cur;
+  });
+}
+
+function queryMemoryUI(){
+  const robotId=document.getElementById('m-robot-select').value;
+  const type=document.getElementById('m-type').value;
+  const minScore=parseFloat(document.getElementById('m-min-score').value)||0;
+  const tbody=document.getElementById('memory-table');
+  if(!robotId){ tbody.innerHTML='<tr><td colspan="9" class="empty">Select a robot first</td></tr>'; return; }
+
+  let entries=DB.memory.filter(m=>m.robot_id===robotId);
+  if(type) entries=entries.filter(m=>m.task_type===type);
+  if(minScore>0) entries=entries.filter(m=>m.popw_score>=minScore);
+  entries=[...entries].reverse();
+
+  // Summary cards
+  const sc=document.getElementById('memory-summary-cards');
+  if(entries.length){
+    sc.style.display='grid';
+    document.getElementById('ms-total').textContent=entries.length;
+    const avg=(entries.reduce((s,e)=>s+e.popw_score,0)/entries.length).toFixed(3);
+    document.getElementById('ms-avg').textContent=avg;
+    document.getElementById('ms-best').textContent=Math.max(...entries.map(e=>e.popw_score)).toFixed(3);
+    document.getElementById('ms-worst').textContent=Math.min(...entries.map(e=>e.popw_score)).toFixed(3);
+  } else { sc.style.display='none'; }
+
+  if(!entries.length){ tbody.innerHTML='<tr><td colspan="9" class="empty">No memory entries found</td></tr>'; return; }
+  tbody.innerHTML=entries.map(e=>`<tr>
+    <td class="mono">${shortId(e.task_id)}</td>
+    <td><span class="badge bg-cyan">${e.task_type}</span></td>
+    <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.instruction.slice(0,40)}…</td>
+    <td>
+      <span style="color:${scoreColor(e.popw_score)};font-family:var(--font-mono);font-weight:700">${e.popw_score.toFixed(3)}</span>
+      ${scoreBarHTML(e.popw_score)}
+    </td>
+    <td class="mono">${e.safety_score.toFixed(2)}</td>
+    <td class="mono">${e.task_match.toFixed(2)}</td>
+    <td class="mono">${e.efficiency.toFixed(2)}</td>
+    <td style="font-size:.7rem;color:var(--muted2)">${(e.telemetry?.strategy||'—').replace(/_/g,' ')}</td>
+    <td class="mono">#${e.block_number}</td>
+  </tr>`).join('');
+}
+
+// ════════════════════════════════════════════
+//  RENDER — LEADERBOARD
+// ════════════════════════════════════════════
+function renderLeaderboard(){
+  const lb=Object.entries(DB.reputation)
+    .filter(([,r])=>r.total_tasks>0)
+    .sort(([,a],[,b])=>b.score-a.score).slice(0,20);
+  const tbody=document.getElementById('lb-table');
+  if(!lb.length){ tbody.innerHTML='<tr><td colspan="8" class="empty">No ranked robots yet — run Simulator</td></tr>'; return; }
+  tbody.innerHTML=lb.map(([rid,rep],i)=>{
+    const robot=DB.robots.find(r=>r.robot_id===rid);
+    const sr=rep.total_tasks>0?((rep.successful_tasks/rep.total_tasks)*100).toFixed(1)+'%':'—';
+    const rankIcon = i===0?'🥇':i===1?'🥈':i===2?'🥉':`${i+1}`;
+    const mem=DB.memory.filter(m=>m.robot_id===rid);
+    const trend=mem.slice(-5).map(m=>{
+      const h=Math.max(4,Math.round(m.popw_score*20));
+      return `<div style="width:6px;height:${h}px;background:${scoreColor(m.popw_score)};border-radius:2px;opacity:.8"></div>`;
+    }).join('');
+    return `<tr>
+      <td style="font-size:1rem">${rankIcon}</td>
+      <td class="mono">${shortId(rid)}</td>
+      <td>${robot?.metadata?.label||'—'}</td>
+      <td>
+        <span style="color:${scoreColor(rep.score)};font-family:var(--font-mono);font-weight:700">${rep.score.toFixed(4)}</span>
+        ${scoreBarHTML(rep.score)}
+      </td>
+      <td>${tierBadge(rep.score)}</td>
+      <td style="font-family:var(--font-mono)">${rep.total_tasks}</td>
+      <td style="color:var(--green);font-family:var(--font-mono)">${sr}</td>
+      <td><div style="display:flex;align-items:flex-end;gap:2px;height:20px">${trend||'—'}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+// ════════════════════════════════════════════
+//  UI — REGISTER ROBOT
+// ════════════════════════════════════════════
+function registerRobotUI(){
+  const owner=document.getElementById('r-owner').value.trim();
+  const label=document.getElementById('r-label').value.trim();
+  const model=document.getElementById('r-model').value.trim();
+  const serial=document.getElementById('r-serial').value.trim();
+  const type=document.getElementById('r-type').value;
+  const alertEl=document.getElementById('r-alert');
+  if(!owner){ alertEl.innerHTML='<div class="alert alert-error">Owner address is required</div>'; return; }
+  try{
+    const hw = model ? {model,serial,type} : null;
+    const robot=registerRobotCore(owner, hw, label||model||'Robot', type);
+    alertEl.innerHTML=`<div class="alert alert-success">✅ Registered: ${robot.robot_id}</div>`;
+    renderRobots(); updateRobotSelects();
+    addLog(`Robot registered: ${label||model||'Robot'} (${shortId(robot.robot_id)})`,'ok');
+    toast(`Robot registered: ${label||model||'Robot'}`,'success');
+  }catch(e){ alertEl.innerHTML=`<div class="alert alert-error">❌ ${e.message}</div>`; }
+}
+function autofillRobot(){
+  const examples=[
+    {label:'Drone Alpha',model:'DJI-Mavic-3',serial:'DJI-'+Math.floor(rand(100,999)),type:'drone'},
+    {label:'RoboArm Beta',model:'UR5e',serial:'UR-'+Math.floor(rand(100,999)),type:'arm'},
+    {label:'Spot Gamma',model:'Boston-Spot',serial:'BD-'+Math.floor(rand(100,999)),type:'quadruped'},
+    {label:'Humanoid Delta',model:'Figure-01',serial:'FIG-'+Math.floor(rand(100,999)),type:'humanoid'},
+  ];
+  const ex=pick(examples);
+  document.getElementById('r-owner').value=WALLET.address||'5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY';
+  document.getElementById('r-label').value=ex.label;
+  document.getElementById('r-model').value=ex.model;
+  document.getElementById('r-serial').value=ex.serial;
+  document.getElementById('r-type').value=ex.type;
+}
+
+// ════════════════════════════════════════════
+//  UI — POST TASK
+// ════════════════════════════════════════════
+function postTaskUI(){
+  const instr=document.getElementById('t-instr').value.trim();
+  const type=document.getElementById('t-type').value;
+  const reward=parseFloat(document.getElementById('t-reward').value)||0;
+  const poster=document.getElementById('t-poster').value.trim();
+  const robotId=document.getElementById('t-robot-select').value||null;
+  const alertEl=document.getElementById('t-alert');
+  if(!instr||!poster){ alertEl.innerHTML='<div class="alert alert-error">Instruction and poster address are required</div>'; return; }
+  try{
+    const task=postTaskCore(instr,type,reward,poster,robotId);
+    alertEl.innerHTML=`<div class="alert alert-success">✅ Task posted: ${shortId(task.task_id)}</div>`;
+    renderTasks();
+    addLog(`Task posted: [${type}] ${instr.slice(0,40)}… — ${reward} KNX`,'info');
+    toast(`Task posted — ${reward} testKNX reward`,'success');
+  }catch(e){ alertEl.innerHTML=`<div class="alert alert-error">❌ ${e.message}</div>`; }
+}
+function autofillTask(){
+  const tasks=[
+    {instr:'Fly to roof zone B and photograph the solar panel array for damage assessment',type:'navigation',reward:12},
+    {instr:'Pick the red cylinder from conveyor A and place it in bin B with precision grip',type:'manipulation',reward:8},
+    {instr:'Generate a complete 3D SLAM map of warehouse sector C including all shelving units',type:'slam',reward:15},
+    {instr:'Inspect pipeline joints 47-52 for corrosion damage and record telemetry data',type:'inspection',reward:10},
+    {instr:'Coordinate fleet of 3 drones to perimeter sweep and return to base in formation',type:'fleet',reward:20},
+  ];
+  const t=pick(tasks);
+  document.getElementById('t-instr').value=t.instr;
+  document.getElementById('t-type').value=t.type;
+  document.getElementById('t-reward').value=t.reward;
+  document.getElementById('t-poster').value=WALLET.address||'5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY';
+}
+
+// ════════════════════════════════════════════
+//  FAUCET
+// ════════════════════════════════════════════
+function requestFaucet(){
+  const addr=document.getElementById('faucet-addr').value.trim();
+  const res=document.getElementById('faucet-result');
+  if(!addr||addr.length<10){ res.innerHTML='<div class="alert alert-error">Enter a valid Substrate address</div>'; return; }
+  res.innerHTML='<div class="alert alert-info"><span class="spin"></span> Requesting testKNX…</div>';
+  setTimeout(()=>{
+    const amount=(100+Math.floor(rand(0,50)));
+    res.innerHTML=`<div class="alert alert-success">
+      ✅ <strong>${amount} testKNX</strong> sent to ${addr.slice(0,16)}…<br/>
+      <span style="font-size:.65rem;opacity:.7">Tx: ${hash(addr+Date.now())} · Block #${nextBlock()}</span>
+    </div>`;
+    if(WALLET.connected && WALLET.address===addr){
+      WALLET.balance=(parseFloat(WALLET.balance)||0)+amount;
+    }
+    toast(`${amount} testKNX sent to your wallet`,'success');
+    addLog(`Faucet: ${amount} testKNX → ${addr.slice(0,14)}…`,'ok');
+  },1800);
+}
+
+// ════════════════════════════════════════════
+//  SIMULATOR
+// ════════════════════════════════════════════
+const OWNER_ADDR='5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY';
+const VALIDATOR_ADDR='5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty';
+const ROBOT_CFGS=[
+  {hw:{model:'DJI-Mavic-3',type:'drone'},  label:'Drone Alpha',  type:'drone'},
+  {hw:{model:'UR5e',type:'arm'},            label:'RoboArm Beta', type:'arm'},
+  {hw:{model:'Boston-Spot',type:'quad'},    label:'Spot Gamma',   type:'quadruped'},
+  {hw:{model:'Figure-01',type:'humanoid'},  label:'Humanoid Delta',type:'humanoid'},
+  {hw:{model:'DJI-M300',type:'drone'},      label:'Drone Epsilon', type:'drone'},
+];
+const TASK_DEFS=[
+  ['navigation','Fly to building roof and photograph solar panels',10],
+  ['manipulation','Pick the red cylinder from bin A, place in bin B',8],
+  ['slam','Generate complete 3D map of warehouse sector C',12],
+  ['inspection','Inspect pipeline joints 47-52 for corrosion damage',9],
+  ['fleet','Coordinate 3 drones to sweep the perimeter in formation',15],
+];
+
+function setStep(n, state){
+  for(let i=1;i<=8;i++){
+    const el=document.getElementById('step-'+i);
+    if(!el) continue;
+    el.classList.remove('active','done','error');
+    if(i<n) el.classList.add('done');
+    else if(i===n) el.classList.add(state||'active');
+  }
+}
+
+async function runSimulation(){
+  const btn=document.getElementById('sim-btn');
+  btn.disabled=true; btn.innerHTML='<span class="spin"></span> Running…';
+  document.getElementById('sim-log').innerHTML='';
+  document.getElementById('sim-results-card').style.display='none';
+  document.getElementById('sim-artifact-card').style.display='none';
+
+  const numRobots=parseInt(document.getElementById('sim-robots').value);
+  const tasksPerRobot=parseInt(document.getElementById('sim-tasks').value);
+  const rounds=parseInt(document.getElementById('sim-rounds').value);
+  const noise=document.getElementById('sim-noise').value;
+  const noiseMap={low:.03,medium:.08,high:.18};
+  const noiseLevel=noiseMap[noise]||.08;
+
+  simLog('━━━━━━ MemoryMesh AI Subnet Simulation ━━━━━━','info');
+  simLog(`Config: ${numRobots} robots × ${tasksPerRobot} tasks × ${rounds} rounds · noise=${noise}`,'info');
+  await sleep(200);
+
+  // STEP 1 — Register robots
+  setStep(1,'active'); simLog('\n[1] Registering robots on-chain…','info');
+  const simRobots=[];
+  for(let i=0;i<numRobots;i++){
+    const cfg=ROBOT_CFGS[i%ROBOT_CFGS.length];
+    const hw={...cfg.hw, serial:'SIM'+Date.now()+i};
+    let robot;
+    try{ robot=registerRobotCore(OWNER_ADDR,hw,cfg.label+' #'+i,cfg.type); }
+    catch(e){ robot=DB.robots.find(r=>r.metadata?.label?.startsWith(cfg.label)); }
+    if(robot){ simRobots.push(robot); simLog(`  ✅ ${cfg.label}: ${shortId(robot.robot_id)}`,'ok'); }
+    await sleep(50);
+  }
+
+  // STEP 2 — Post tasks
+  setStep(2,'active'); simLog('\n[2] Posting tasks to subnet…','info');
+  const allPostedTasks=[];
+  for(const robot of simRobots){
+    for(let ti=0;ti<tasksPerRobot;ti++){
+      const [ttype,instr,reward]=TASK_DEFS[ti%TASK_DEFS.length];
+      const task=postTaskCore(instr,ttype,reward,OWNER_ADDR,robot.robot_id);
+      allPostedTasks.push({task,robot});
+      simLog(`  📋 [${ttype.padEnd(12)}] ${instr.slice(0,40)}… ${reward} KNX`,'info');
+      await sleep(20);
+    }
+  }
+
+  const roundResults=[];
+  let totalPoPW=0, totalAccepted=0;
+  let lastArtifact=null;
+
+  for(let round=1;round<=rounds;round++){
+    const isR2=round>1;
+    await sleep(100);
+    simLog(`\n━━ Round ${round}/${rounds} — ${isR2?'📚 Memory-enhanced':'🆕 First pass'} ━━`,'info');
+
+    // STEP 3 — Miners
+    setStep(3,'active'); simLog('\n[3] Miners generating policies…','info');
+    const roundPairs=[];
+    const tasksThisRound=isR2?simRobots.map(robot=>{
+      const [ttype,instr,reward]=TASK_DEFS[(Math.floor(rand(0,TASK_DEFS.length)))];
+      const task=postTaskCore(instr+' [r'+round+']',ttype,reward,OWNER_ADDR,robot.robot_id);
+      return {task,robot};
+    }):allPostedTasks;
+
+    for(const {task,robot} of tasksThisRound){
+      const policy=generatePolicy(task,robot.robot_id);
+      const ph=hash(JSON.stringify(policy));
+      const t=DB.tasks.find(x=>x.task_id===task.task_id);
+      if(t&&t.status==='open'){ t.status='assigned'; t.robot_id=robot.robot_id; t.policy_hash=ph; }
+      roundPairs.push({task:t||task,robot,policy});
+      const mem=policy.memory_enhanced?`📚 mem=${policy.memory_entries_used}` : '🆕 fresh';
+      simLog(`  ⛏️  ${robot.metadata.label.padEnd(16)} [${task.task_type.padEnd(12)}] ${policy.strategy} · ${mem}`,'ok');
+      await sleep(25);
+    }
+
+    // STEP 4 — Execute
+    setStep(4,'active'); simLog('\n[4] Robots executing tasks (PoPW)…','info');
+    for(const {task} of roundPairs){
+      const t=DB.tasks.find(x=>x.task_id===task.task_id);
+      if(t&&t.status==='assigned') t.status='executing';
+    }
+    await sleep(150);
+
+    // STEP 5 — Validate
+    setStep(5,'active'); simLog('\n[5] Validators scoring PoPW artifacts…','info');
+    const roundArtifacts=[];
+    for(const {task,robot,policy} of roundPairs){
+      const t=DB.tasks.find(x=>x.task_id===task.task_id);
+      if(!t||t.status!=='executing') continue;
+      const tele={...simulateTelemetry(task.task_type,isR2),strategy:policy.strategy};
+      // Apply noise
+      if(Math.random()<noiseLevel) tele.collision_detected=true;
+      if(Math.random()<noiseLevel*.4) tele.emergency_stop_triggered=true;
+      const scores=scorePoPW(tele,task.task_type);
+      const block=nextBlock();
+      const accepted=scores.popw>=.5;
+
+      // STEP 6 — Memory
+      setStep(6,'active');
+      const entry=writeMemory(robot.robot_id,task.task_id,task.task_type,
+        task.instruction,policy.strategy,scores,VALIDATOR_ADDR,block,tele);
+      t.popw_score=scores.popw; t.block_number=block;
+      t.status=accepted?'completed':'failed';
+      if(accepted) t.completed_at=now();
+
+      totalPoPW++; if(accepted) totalAccepted++;
+      roundArtifacts.push({robot,task,policy,scores,accepted,block,tele});
+      lastArtifact={task,robot,policy,scores,block,tele};
+
+      const icon=accepted?'✅':'❌';
+      simLog(`  ${icon} ${robot.metadata.label.padEnd(14)} [${task.task_type.padEnd(12)}] PoPW=${scores.popw.toFixed(3)}  S=${scores.safety.toFixed(2)} M=${scores.match.toFixed(2)} E=${scores.eff.toFixed(2)}`,'ok');
+      await sleep(30);
+    }
+
+    setStep(7,'active');
+    await sleep(100);
+    const rAvg=roundArtifacts.reduce((s,a)=>s+a.scores.popw,0)/(roundArtifacts.length||1);
+    roundResults.push({round,avg:rAvg,count:roundArtifacts.length,accepted:roundArtifacts.filter(a=>a.accepted).length});
+    simLog(`  → Round ${round} avg PoPW: ${rAvg.toFixed(4)} | accepted: ${roundArtifacts.filter(a=>a.accepted).length}/${roundArtifacts.length}`,'info');
+  }
+
+  setStep(8,'done');
+  await sleep(200);
+
+  // Show PoPW artifact
+  if(lastArtifact){
+    const {task,robot,policy,scores,block,tele}=lastArtifact;
+    document.getElementById('sim-artifact-card').style.display='block';
+    document.getElementById('sim-artifact').innerHTML=
+      `<span class="ak">{</span>\n` +
+      `  <span class="ak">"task_id"</span>: <span class="av">"${task.task_id}"</span>,\n` +
+      `  <span class="ak">"robot_id"</span>: <span class="av">"${robot.robot_id}"</span>,\n` +
+      `  <span class="ak">"robot_label"</span>: <span class="av">"${robot.metadata.label}"</span>,\n` +
+      `  <span class="ak">"task_type"</span>: <span class="av">"${task.task_type}"</span>,\n` +
+      `  <span class="ak">"strategy"</span>: <span class="av">"${policy.strategy}"</span>,\n` +
+      `  <span class="ak">"memory_enhanced"</span>: <span class="ab">${policy.memory_enhanced}</span>,\n` +
+      `  <span class="ak">"scores"</span>: <span class="ak">{</span>\n` +
+      `    <span class="ak">"popw"</span>: <span class="av">${scores.popw}</span>,\n` +
+      `    <span class="ak">"safety"</span>: <span class="av">${scores.safety}</span>,\n` +
+      `    <span class="ak">"task_match"</span>: <span class="av">${scores.match}</span>,\n` +
+      `    <span class="ak">"efficiency"</span>: <span class="av">${scores.eff}</span>\n` +
+      `  <span class="ak">}</span>,\n` +
+      `  <span class="ak">"accepted"</span>: <span class="ab">${scores.popw>=.5}</span>,\n` +
+      `  <span class="ak">"validator"</span>: <span class="av">"${VALIDATOR_ADDR}"</span>,\n` +
+      `  <span class="ak">"block_number"</span>: <span class="av">${block}</span>,\n` +
+      `  <span class="ak">"network"</span>: <span class="av">"Konnex Testnet"</span>\n` +
+      `<span class="ak">}</span>`;
+  }
+
+  // Final leaderboard
+  simLog('\n━━ Final Leaderboard ━━','info');
+  const lb=Object.entries(DB.reputation)
+    .filter(([id])=>simRobots.find(r=>r.robot_id===id))
+    .sort(([,a],[,b])=>b.score-a.score);
+  lb.forEach(([id,rep],i)=>{
+    const r=DB.robots.find(x=>x.robot_id===id);
+    const succ=rep.total_tasks>0?((rep.successful_tasks/rep.total_tasks)*100).toFixed(0)+'%':'—';
+    simLog(`  ${i+1}. ${(r?.metadata?.label||'?').padEnd(18)} Score=${rep.score.toFixed(4)} Tier=${tierInfo(rep.score).label.padEnd(8)} Tasks=${rep.total_tasks} Success=${succ}`,'ok');
+  });
+
+  // Results panel
+  const impr=roundResults.length>1?((roundResults[roundResults.length-1].avg-roundResults[0].avg)*100).toFixed(1):null;
+  document.getElementById('sim-results-card').style.display='block';
+  document.getElementById('sim-results').innerHTML=`
+    <div class="stats-row">
+      <div class="stat-card" style="--accent:var(--cyan)"><div class="stat-label">Robots</div><div class="stat-value c-cyan">${simRobots.length}</div></div>
+      <div class="stat-card" style="--accent:var(--purple)"><div class="stat-label">PoPW Events</div><div class="stat-value c-purple">${totalPoPW}</div></div>
+      <div class="stat-card" style="--accent:var(--green)"><div class="stat-label">Accepted</div><div class="stat-value c-green">${totalAccepted}<span style="font-size:.9rem"> (${totalPoPW?((totalAccepted/totalPoPW)*100).toFixed(0):0}%)</span></div></div>
+      ${impr?`<div class="stat-card" style="--accent:var(--yellow)"><div class="stat-label">Score Improvement</div><div class="stat-value ${+impr>=0?'c-green':'c-red'}">${+impr>=0?'+':''}${impr}%</div><div class="stat-sub">R1 → R${rounds} avg PoPW</div></div>`:''}
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Round</th><th>Tasks</th><th>Avg PoPW</th><th>Accepted</th><th>Memory</th></tr></thead>
+      <tbody>${roundResults.map(r=>`<tr>
+        <td style="font-family:var(--font-mono)">Round ${r.round}</td>
+        <td>${r.count}</td>
+        <td>
+          <span style="color:${scoreColor(r.avg)};font-family:var(--font-mono);font-weight:700">${r.avg.toFixed(4)}</span>
+          ${scoreBarHTML(r.avg)}
+        </td>
+        <td style="color:var(--green);font-family:var(--font-mono)">${r.accepted}/${r.count}</td>
+        <td>${r.round>1?'<span class="badge bg-purple">📚 Memory-enhanced</span>':'<span class="badge bg-cyan">🆕 Fresh policies</span>'}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table></div>`;
+
+  renderOverview(); renderRobots(); renderLeaderboard();
+  addLog(`Simulation complete: ${totalPoPW} PoPW events, ${totalAccepted} accepted, ${simRobots.length} robots`,'ok');
+  toast('Simulation complete! Check Dashboard & Leaderboard.','success');
+  btn.disabled=false; btn.innerHTML='▶ Run Simulation';
+  setStep(9,'done');
+}
+
+// ════════════════════════════════════════════
+//  CLOSE MODAL ON OUTSIDE CLICK
+// ════════════════════════════════════════════
+document.getElementById('wallet-modal').addEventListener('click',function(e){
+  if(e.target===this) closeWalletModal();
+});
+
+// ════════════════════════════════════════════
+//  INIT
+// ════════════════════════════════════════════
+(function init(){
+  addLog('MemoryMesh AI Dashboard initialized','info');
+  addLog('Network: wss://testnet-rpc1.konnex.world:39944','info');
+  addLog('Connect your wallet or run Simulator to start','info');
+  renderOverview();
+})();
+</script>
+</body>
+</html>
+HTMLEOF

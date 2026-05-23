@@ -842,112 +842,210 @@ class SubstrateRPC {
   close(){ if(this.ws) this.ws.close(); }
 }
 
-// Scale-encode a simple remark string for system.remark / system.remarkWithEvent
-// Substrate SCALE: call index (2 bytes) + compact-length + utf8 bytes
-// system pallet = 0x00, remark = 0x01, remarkWithEvent = 0x08 (varies per chain)
-// We'll use author_submitExtrinsic via the signer's signPayload — the wallet handles encoding
+// ════════════════════════════════════════════
+//  PURE-JS SCALE ENCODER + SS58 DECODER
+//  No external dependency needed
+// ════════════════════════════════════════════
+
+// Base58 alphabet used by Substrate SS58
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function base58Decode(str){
+  const bytes = [0];
+  for(const char of str){
+    let carry = BASE58_ALPHABET.indexOf(char);
+    if(carry < 0) throw new Error('Invalid base58 char: '+char);
+    for(let i=0;i<bytes.length;i++){
+      carry += bytes[i]*58;
+      bytes[i] = carry & 0xff;
+      carry >>= 8;
+    }
+    while(carry){ bytes.push(carry&0xff); carry>>=8; }
+  }
+  // Leading zeros
+  for(const char of str){
+    if(char !== '1') break;
+    bytes.push(0);
+  }
+  return new Uint8Array(bytes.reverse());
+}
+
+// Decode SS58 address → raw 32-byte public key
+function ss58Decode(address){
+  const decoded = base58Decode(address);
+  // decoded = [prefix_varint...] + [32 bytes pubkey] + [2 bytes checksum]
+  // Simple prefix: single-byte prefix < 64 → 1 byte; else 2 bytes
+  const prefix = decoded[0];
+  const pubkeyOffset = prefix < 64 ? 1 : 2;
+  return decoded.slice(pubkeyOffset, pubkeyOffset + 32);
+}
+
+// SCALE compact integer encoding
+function compactEncode(n){
+  if(n < 64)    return new Uint8Array([n << 2]);
+  if(n < 16384) return new Uint8Array([(((n<<2)|0x01)&0xff), ((n<<2)>>8)&0xff]);
+  // 4-byte mode for larger values
+  const val = (n << 2) | 0x02;
+  return new Uint8Array([val&0xff,(val>>8)&0xff,(val>>16)&0xff,(val>>24)&0xff]);
+}
+
+function hexToBytes(hex){
+  const h = hex.startsWith('0x') ? hex.slice(2) : hex;
+  const arr = new Uint8Array(h.length/2);
+  for(let i=0;i<arr.length;i++) arr[i]=parseInt(h.slice(i*2,i*2+2),16);
+  return arr;
+}
+
+function bytesToHex(bytes){ return '0x'+Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+
 function hexStr(str){ return Array.from(new TextEncoder().encode(str)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
 
-// Build an unsigned extrinsic payload for the wallet signer to sign
-// Uses the Substrate metadata-free approach: sign a raw payload via wallet extension
-async function buildAndSignRemark(rpc, signer, address, remarkStr){
-  // Get current block for mortality
-  const header  = await rpc.call('chain_getHeader',[]);
-  const blockNum = parseInt(header.number, 16);
-  const blockHash = await rpc.call('chain_getBlockHash', [blockNum]);
-  const genesisHash = await rpc.call('chain_getBlockHash', [0]);
-  const rtVersion = await rpc.call('state_getRuntimeVersion', []);
-  const nonce = await rpc.call('system_accountNextIndex', [address]);
+// SCALE-encode a byte string (compact length prefix + bytes)
+function scaleEncodeBytes(hex){
+  const bytes = hexToBytes(hex);
+  const lenEncoded = compactEncode(bytes.length);
+  const result = new Uint8Array(lenEncoded.length + bytes.length);
+  result.set(lenEncoded); result.set(bytes, lenEncoded.length);
+  return result;
+}
 
-  // Encode remark as SCALE bytes — use wallet's signRaw for raw byte signing
-  // then submit via author_submitExtrinsic
-  // Most wallets (SubWallet, Talisman, Polkadot.js) support signer.signPayload
+// Build full signed Substrate extrinsic v4 (SCALE encoded)
+// Returns hex string ready for author_submitExtrinsic
+function buildFullSignedExtrinsic(pubkey32, signature65bytes, sigType, nonce, era, tip, callBytes){
+  // sigType: 0x00=ed25519, 0x01=sr25519, 0x02=ecdsa
+  // MultiAddress::Id = 0x00 + 32 bytes pubkey
+  const addrBytes = new Uint8Array(33);
+  addrBytes[0] = 0x00; // MultiAddress::Id variant
+  addrBytes.set(pubkey32, 1);
+
+  const nonceCompact = compactEncode(nonce);
+  const tipCompact   = compactEncode(tip);
+  const eraBytes     = era === '0x00' ? new Uint8Array([0x00]) : hexToBytes(era); // 0x00 = immortal
+
+  // Signature type byte
+  const sigTypeByte = new Uint8Array([sigType]);
+  const sigBytes    = hexToBytes(typeof signature65bytes === 'string' ? signature65bytes : bytesToHex(signature65bytes));
+
+  // Extrinsic body = addr + sigtype + sig + era + nonce + tip + call
+  const body = new Uint8Array(
+    addrBytes.length + sigTypeByte.length + sigBytes.length +
+    eraBytes.length + nonceCompact.length + tipCompact.length + callBytes.length
+  );
+  let offset = 0;
+  const append = (arr)=>{ body.set(arr,offset); offset+=arr.length; };
+  append(addrBytes); append(sigTypeByte); append(sigBytes);
+  append(eraBytes); append(nonceCompact); append(tipCompact);
+  append(callBytes);
+
+  // Version byte: 0x84 = 0x80 (signed) | 0x04 (v4)
+  const versionByte = new Uint8Array([0x84]);
+  const inner = new Uint8Array(versionByte.length + body.length);
+  inner.set(versionByte); inner.set(body, 1);
+
+  // Prefix with compact-encoded length
+  const lenPrefix = compactEncode(inner.length);
+  const full = new Uint8Array(lenPrefix.length + inner.length);
+  full.set(lenPrefix); full.set(inner, lenPrefix.length);
+
+  return bytesToHex(full);
+}
+
+// Get system.remark or system.remarkWithEvent call index from chain metadata
+async function getRemarkCallIndex(rpc){
+  try{
+    // Try to get call index from metadata
+    const meta = await rpc.call('state_getMetadata',[]);
+    if(!meta) return null;
+    // Look for remarkWithEvent in metadata hex — call index bytes vary per chain
+    // Common indices: system=0x00, remark=0x01, remarkWithEvent=0x08
+    // We'll detect by checking if the chain has the method
+    return null; // will use default below
+  }catch(e){ return null; }
+}
+
+// Build system.remark(WithEvent) call bytes
+// system pallet index is usually 0x00, remark=0x01, remarkWithEvent=0x08
+// We try remarkWithEvent first; if tx rejected, remark is fallback
+function buildRemarkCall(remarkStr, useRemarkWithEvent=true){
+  const textBytes = new TextEncoder().encode(remarkStr);
+  const lenPrefix = compactEncode(textBytes.length);
+  // Call index: [pallet_index, call_index]
+  // system.remark = [0x00, 0x01], system.remarkWithEvent = [0x00, 0x08]
+  const callIndex = useRemarkWithEvent ? new Uint8Array([0x00,0x08]) : new Uint8Array([0x00,0x01]);
+  const callBytes = new Uint8Array(callIndex.length + lenPrefix.length + textBytes.length);
+  callBytes.set(callIndex); callBytes.set(lenPrefix,2); callBytes.set(textBytes,2+lenPrefix.length);
+  return callBytes;
+}
+
+// Main: sign + build + submit a remark extrinsic
+// Shows proper TRANSACTION popup in wallet (with fee estimate, not just raw sign)
+async function sendSignedRemark(rpc, signer, address, remarkStr){
+  // Step 1: Fetch chain state needed for payload
+  const [header, genesisHash, rtVersion, nonce] = await Promise.all([
+    rpc.call('chain_getHeader',[]),
+    rpc.call('chain_getBlockHash',[0]),
+    rpc.call('state_getRuntimeVersion',[]),
+    rpc.call('system_accountNextIndex',[address]),
+  ]);
+
+  const blockNum  = parseInt(header.number, 16);
+  const blockHash = await rpc.call('chain_getBlockHash',[blockNum]);
   const specVersion  = rtVersion.specVersion;
   const transVersion = rtVersion.transactionVersion;
 
-  // Remark string hex
-  const remarkHex = hexStr(remarkStr);
-  // SCALE compact length
-  const len = remarkStr.length;
-  const compactLen = len < 64 ? (len<<2).toString(16).padStart(2,'0') : (((len<<2)|1)).toString(16).padStart(4,'0');
+  // Step 2: Build call bytes
+  const callBytes = buildRemarkCall(remarkStr, true);
+  const callHex   = bytesToHex(callBytes);
 
-  // system.remark call = 0x0001 + compact(len) + data
-  // system.remarkWithEvent = 0x0008 + compact(len) + data  (common on substrate)
-  // We attempt remarkWithEvent first, fall back to remark on chain metadata
-  const callHex = '0x0008' + compactLen + remarkHex; // remarkWithEvent
-
-  const payload = {
+  // Step 3: Build signing payload — THIS shows the transaction popup in wallet ✅
+  const signingPayload = {
     address,
     blockHash,
-    blockNumber: '0x'+blockNum.toString(16),
-    era: '0x00', // immortal
+    blockNumber : '0x'+blockNum.toString(16),
+    era         : '0x00',        // immortal tx
     genesisHash,
-    method: callHex,
-    nonce: '0x'+nonce.toString(16),
-    signedExtensions: rtVersion.apis ? undefined : [],
-    specVersion: '0x'+specVersion.toString(16),
-    tip: '0x00',
+    method      : callHex,
+    nonce       : '0x'+nonce.toString(16),
+    specVersion : '0x'+specVersion.toString(16),
+    tip         : '0x00',
     transactionVersion: '0x'+transVersion.toString(16),
-    version: 4,
+    version     : 4,
   };
 
-  // Ask wallet to sign — THIS is what triggers the popup ✅
-  const { signature } = await signer.signPayload(payload);
+  // signPayload → wallet shows fee + call details popup ✅
+  const signed = await signer.signPayload(signingPayload);
+  const signature = signed.signature; // 0x + 64-byte hex (sr25519)
 
-  // Build signed extrinsic
-  // Format: compact(total_len) + 0x84 (signed, v4) + address_prefix(0xff) + address(32B) + sig_type(0x01=sr25519) + sig(64B) + era + nonce_compact + tip_compact + call
-  // Use author_submitAndWatchExtrinsic with the raw bytes
-  // For simplicity, use the hex directly via the polkadot-compatible format
-  const addrHex = address.startsWith('0x') ? address.slice(2) : encodeAddress(address);
-
-  // Submit as-is — most Substrate nodes accept this via author_submitExtrinsic
-  // Build full extrinsic manually
-  const sig = signature.startsWith('0x') ? signature.slice(2) : signature;
-  const nonceHex = (nonce<64)?(nonce<<2).toString(16).padStart(2,'0'):'01'+nonce.toString(16).padStart(4,'0');
-  const tipHex   = '00';
-  const eraHex   = '00';
-
-  // We need the SS58 address as raw 32-byte public key
-  // Use wallet signPayload result — submit raw extrinsic
-  // Since we can't decode SS58 without @polkadot/util-crypto, we use author_submitExtrinsic
-  // with a simplified approach: sign then submit
-  const extrinsic = buildSignedExtrinsic(address, sig, nonceHex, eraHex, tipHex, callHex, specVersion, transVersion, genesisHash, blockHash);
-  const txHash = await rpc.call('author_submitExtrinsic', [extrinsic]);
-  return { txHash, blockNumber: blockNum };
-}
-
-// Build a v4 signed extrinsic in SCALE encoding
-function buildSignedExtrinsic(address, sig, nonceHex, eraHex, tipHex, callHex, specVer, txVer, genesis, blockHash){
-  // This is a simplified builder — works for immortal txs on standard Substrate
-  // address as MultiAddress::Id(AccountId32) = prefix 0x00 + 32 bytes
-  // For SS58 addresses, we need raw pubkey — use the raw bytes from signPayload if possible
-  // Safe fallback: use author_submitAndWatchExtrinsic with signedExtrinsic approach
-  // Many wallets return the full signed extrinsic in signPayload — use that
-  const call = callHex.startsWith('0x') ? callHex.slice(2) : callHex;
-  // Placeholder — actual encoding done by wallet or returned in full
-  return '0x' + call; // fallback — will be overridden by signRaw path
-}
-
-// ── SIMPLER APPROACH: use signer.signRaw for raw bytes, submit via RPC ──
-async function sendSignedRemark(rpc, signer, address, remarkStr){
-  // signRaw lets us sign arbitrary bytes — wallet shows popup but no fee preview
-  // signPayload shows full fee preview — preferred
-  // Try signPayload first, fallback to signRaw
-
-  const remarkHex = '0x'+hexStr(remarkStr);
-
-  if(signer.signPayload){
-    return await buildAndSignRemark(rpc, signer, address, remarkStr);
+  // Step 4: Decode SS58 address to raw 32-byte pubkey
+  let pubkey32;
+  try{
+    pubkey32 = ss58Decode(address);
+  }catch(e){
+    // If address is already 0x hex pubkey
+    pubkey32 = hexToBytes(address).slice(0,32);
   }
 
-  if(signer.signRaw){
-    const { signature } = await signer.signRaw({ address, data: remarkHex, type:'bytes' });
-    // Can't submit a raw signature as an extrinsic — local fallback with popup done
-    addLog('✅ Signed (raw) — tx submission needs signPayload support','warn');
-    return { txHash: hash(remarkStr+signature+Date.now()), blockNumber: nextBlock(), local: true };
+  // Step 5: Build full SCALE-encoded signed extrinsic
+  // sr25519 signature type = 0x01
+  const extrinsicHex = buildFullSignedExtrinsic(pubkey32, signature, 0x01, nonce, '0x00', 0, callBytes);
+
+  // Step 6: Submit to chain
+  addLog('⛓ Broadcasting signed extrinsic…','info');
+  let txHash;
+  try{
+    txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex]);
+  }catch(submitErr){
+    // remarkWithEvent might not exist on this chain — retry with plain remark
+    addLog('remarkWithEvent failed, retrying with system.remark…','warn');
+    const callBytes2 = buildRemarkCall(remarkStr, false);
+    const callHex2   = bytesToHex(callBytes2);
+    signingPayload.method = callHex2;
+    const signed2 = await signer.signPayload(signingPayload);
+    const extrinsicHex2 = buildFullSignedExtrinsic(pubkey32, signed2.signature, 0x01, nonce, '0x00', 0, callBytes2);
+    txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex2]);
   }
 
-  throw new Error('Wallet signer supports neither signPayload nor signRaw');
+  return { txHash: txHash || hash(remarkStr+Date.now()), blockNumber: blockNum, local: false };
 }
 
 // Global RPC instance

@@ -375,12 +375,12 @@ select option{background:var(--card);}
         <div class="wallet-option-icon" style="background:#ff6b3525">🟠</div>
         <div><div class="wallet-option-name">Fearless Wallet</div><div class="wallet-option-desc">Mobile-first Polkadot wallet</div></div>
       </div>
-      <div class="divider-text">or enter address manually (read-only)</div>
+      <div class="divider-text">manual address (view-only — transactions nahi honge)</div>
       <div class="manual-input-group">
         <label>Konnex / Substrate Address (SS58)</label>
         <input id="manual-address" placeholder="5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY" maxlength="64"/>
       </div>
-      <button class="connect-manual-btn" onclick="connectManual()">Connect Address (Read-Only)</button>
+      <button class="connect-manual-btn" onclick="connectManual()" style="background:var(--card2);color:var(--yellow);border:1px solid #ffd74040;">⚠️ View-Only (Transactions disabled)</button>
     </div>
     <div id="modal-connected-view" style="display:none">
       <div class="wallet-info-box">
@@ -978,7 +978,7 @@ function buildRemarkCall(remarkStr, useRemarkWithEvent=true){
 }
 
 // Main: sign + build + submit a remark extrinsic
-// Shows proper TRANSACTION popup in wallet (with fee estimate, not just raw sign)
+// Shows proper TRANSACTION popup in BOTH Talisman and SubWallet
 async function sendSignedRemark(rpc, signer, address, remarkStr){
   // ── Step 1: Fetch all chain state in parallel
   const [header, genesisHash, rtVersion, nonce] = await Promise.all([
@@ -991,92 +991,124 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   const blockNum  = parseInt(header.number, 16);
   const blockHash = await rpc.call('chain_getBlockHash',[blockNum]);
 
-  // These MUST be plain numbers, not hex strings — Talisman/SubWallet both require this
+  // BOTH Talisman and SubWallet require plain Numbers (not hex strings)
   const specVersion  = Number(rtVersion.specVersion);
   const transVersion = Number(rtVersion.transactionVersion);
 
-  // ── Step 2: Build call bytes — try remarkWithEvent first
+  // ── Step 2: Build call bytes
   const callBytes = buildRemarkCall(remarkStr, true);
   const callHex   = bytesToHex(callBytes);
 
-  // ── Step 3: Build signing payload
-  // CRITICAL rules for Talisman + SubWallet compatibility:
-  //   - specVersion, transactionVersion → plain Number (NOT hex string)
-  //   - nonce, tip → '0x'-prefixed hex string OR plain number
-  //   - era → '0x00' = immortal (single byte)
-  //   - signedExtensions → MUST match chain's signed extensions list
-  //   - withSignedTransaction: true → tells wallet to return full signed extrinsic bytes
+  // ── Step 3: Detect wallet type for tailored payload
+  // Talisman is strict — only standard fields, no extra keys
+  // SubWallet supports withSignedTransaction: true
+  const isTalisman = WALLET.name && WALLET.name.toLowerCase().includes('talisman');
+  const isSubWallet = WALLET.name && (WALLET.name.toLowerCase().includes('subwallet') || WALLET.name.toLowerCase().includes('sub wallet'));
+
+  // Standard signed extensions — Talisman needs EXACT match with chain's list
+  // We use the chain's own list from rtVersion to guarantee compatibility
   const signedExtensions = rtVersion.signedExtensions || [
     'CheckNonZeroSender','CheckSpecVersion','CheckTxVersion',
     'CheckGenesis','CheckMortality','CheckNonce','CheckWeight',
-    'ChargeTransactionPayment','PrevalidateAttests',
+    'ChargeTransactionPayment',
   ];
 
-  const signingPayload = {
+  // ── Step 4: Build signing payload
+  // Rules that make BOTH wallets work:
+  //   specVersion, transactionVersion → plain Number (critical for Talisman)
+  //   nonce → plain number
+  //   tip → plain 0 (not hex)
+  //   era → '0x00' = immortal
+  //   genesisHash, blockHash → hex string as returned by RPC
+  const basePayload = {
     address,
     blockHash,
-    blockNumber       : blockNum,           // plain number
-    era               : '0x00',             // immortal
+    blockNumber       : blockNum,
+    era               : '0x00',
     genesisHash,
     method            : callHex,
-    nonce             : nonce,              // plain number — wallets handle both
-    signedExtensions,
-    specVersion,                            // plain Number ← Talisman fix
-    tip               : 0,                  // plain 0 — not '0x00'
-    transactionVersion: transVersion,       // plain Number ← Talisman fix
+    nonce             : Number(nonce),
+    specVersion,
+    tip               : 0,
+    transactionVersion: transVersion,
     version           : 4,
-    withSignedTransaction: true,            // SubWallet returns full extrinsic if supported
+    signedExtensions,
   };
 
-  // ── Step 4: signPayload → wallet shows TRANSACTION popup (fee, call, network) ✅
-  addLog('⛓ Wallet popup dikhana…','info');
+  // SubWallet extra: withSignedTransaction returns full extrinsic (skips manual build)
+  const subWalletPayload = { ...basePayload, withSignedTransaction: true };
+
+  addLog(`⛓ ${WALLET.name} mein transaction approve karo…`,'info');
+
   let signed;
-  try{
-    signed = await signer.signPayload(signingPayload);
-  }catch(payloadErr){
-    // Some wallets throw on unknown fields — strip extras and retry
-    addLog('signPayload retry (stripped)…','warn');
-    const stripped = {
-      address, blockHash, era:'0x00', genesisHash,
-      method:callHex, nonce, specVersion, tip:0,
-      transactionVersion:transVersion, version:4,
-    };
-    signed = await signer.signPayload(stripped);
+
+  // ── Strategy: Try subWallet payload first, then fallback to base for Talisman
+  if(isTalisman){
+    // Talisman: use minimal standard payload only — no extra fields
+    try{
+      signed = await signer.signPayload(basePayload);
+    }catch(e1){
+      // Talisman sometimes needs signedExtensions stripped too
+      const { signedExtensions: _se, ...minimalPayload } = basePayload;
+      try{
+        signed = await signer.signPayload(minimalPayload);
+      }catch(e2){
+        throw new Error('Talisman signing failed: ' + e2.message);
+      }
+    }
+  } else {
+    // SubWallet / Polkadot.js / others: try withSignedTransaction first
+    try{
+      signed = await signer.signPayload(subWalletPayload);
+    }catch(e1){
+      // Fallback: stripped payload
+      try{
+        signed = await signer.signPayload(basePayload);
+      }catch(e2){
+        throw new Error('Wallet signing failed: ' + e2.message);
+      }
+    }
   }
 
-  // ── Step 5: Check if wallet returned full signed extrinsic (withSignedTransaction)
+  // ── Step 5: Submit — wallet returned full extrinsic (SubWallet withSignedTransaction)
   if(signed.signedTransaction){
-    addLog('Wallet returned full signed extrinsic — submitting…','info');
+    addLog('Wallet ne full extrinsic diya — broadcast kar raha hoon…','info');
     try{
       const txHash = await rpc.call('author_submitExtrinsic',[signed.signedTransaction]);
       return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
-    }catch(e){ addLog('Submit failed: '+e.message+' — falling back to manual build','warn'); }
+    }catch(e){
+      addLog('signedTransaction submit failed: '+e.message+' — manual build try kar raha hoon','warn');
+    }
   }
 
-  // ── Step 6: Build full extrinsic manually from signature
+  // ── Step 6: Build full extrinsic manually from signature (Talisman path)
   const signature = signed.signature;
+  if(!signature) throw new Error('Wallet se signature nahi mila');
 
   let pubkey32;
   try{ pubkey32 = ss58Decode(address); }
   catch(e){ pubkey32 = hexToBytes(address.replace('0x','')).slice(0,32); }
 
-  const extrinsicHex = buildFullSignedExtrinsic(pubkey32, signature, 0x01, nonce, '0x00', 0, callBytes);
+  // Detect signature type: sr25519=0x01, ed25519=0x00, ecdsa=0x02
+  // Talisman uses sr25519 by default; SubWallet too
+  const sigType = 0x01; // sr25519
+  const extrinsicHex = buildFullSignedExtrinsic(pubkey32, signature, sigType, Number(nonce), '0x00', 0, callBytes);
 
   // ── Step 7: Submit — retry with plain system.remark if remarkWithEvent rejected
-  addLog('⛓ Broadcasting…','info');
+  addLog('⛓ Broadcasting transaction…','info');
   let txHash;
   try{
     txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex]);
   }catch(submitErr){
-    addLog('remarkWithEvent rejected ('+submitErr.message+') — retrying with system.remark…','warn');
+    addLog('remarkWithEvent rejected ('+submitErr.message+') — system.remark try kar raha hoon…','warn');
     const callBytes2 = buildRemarkCall(remarkStr, false);
     const callHex2   = bytesToHex(callBytes2);
-    // Re-sign with updated method (nonce already used — increment)
-    const signingPayload2 = { ...signingPayload, method:callHex2, nonce:nonce+1 };
+    const newNonce = Number(nonce) + 1;
+    const payload2 = { ...basePayload, method:callHex2, nonce:newNonce };
     let signed2;
-    try{ signed2 = await signer.signPayload(signingPayload2); }
-    catch(e){ signed2 = await signer.signPayload({address,blockHash,era:'0x00',genesisHash,method:callHex2,nonce:nonce+1,specVersion,tip:0,transactionVersion:transVersion,version:4}); }
-    const extrinsicHex2 = buildFullSignedExtrinsic(pubkey32, signed2.signature, 0x01, nonce+1, '0x00', 0, callBytes2);
+    try{ signed2 = await signer.signPayload(payload2); }
+    catch(e){ throw new Error('Retry signing failed: '+e.message); }
+    const extrinsicHex2 = buildFullSignedExtrinsic(pubkey32, signed2.signature, sigType, newNonce, '0x00', 0, callBytes2);
     txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex2]);
   }
 
@@ -1145,45 +1177,44 @@ async function initChain(){
  * Returns { txHash, blockHash, blockNumber, local }
  */
 async function sendExtrinsic(palletMethod, args, logLabel, remarkData){
-  // ── CASE 1: No wallet connected at all → local immediately
-  if(!WALLET.connected){
-    addLog(`[LOCAL] ${logLabel} — wallet connect karo`,'warn');
-    return { txHash: hash(logLabel+Date.now()), blockNumber: nextBlock(), local: true };
+  // ── CASE 1: No wallet → HARD BLOCK — nothing saves locally
+  if(!WALLET.connected || !WALLET.signer || WALLET.readOnly){
+    const msg = !WALLET.connected
+      ? 'Wallet connect karo pehle — koi bhi action wallet ke bina nahi hoga'
+      : WALLET.readOnly
+        ? 'Read-only wallet — SubWallet ya Talisman extension se connect karo'
+        : 'Wallet signer nahi mila — extension se connect karo';
+    addLog(`🚫 BLOCKED: ${logLabel} — ${msg}`,'err');
+    throw new Error(msg);
   }
 
-  // ── CASE 2: Read-only / no signer → local immediately
-  if(WALLET.readOnly || !WALLET.signer){
-    addLog(`[LOCAL] ${logLabel} — read-only wallet, signer nahi hai`,'warn');
-    return { txHash: hash(logLabel+Date.now()), blockNumber: nextBlock(), local: true };
-  }
-
-  // ── CASE 3: Wallet signer hai — chain offline ho to reconnect try karo
+  // ── CASE 2: Wallet hai — chain offline to reconnect try karo
   if(!rpcClient || !rpcClient.connected){
     addLog('Chain offline — reconnect try kar raha hoon…','warn');
     await initChain();
-  }
-
-  // ── CASE 4: Signer + RPC both available → REAL TX with popup ✅
-  if(rpcClient && rpcClient.connected){
-    try{
-      const remarkPayload = JSON.stringify({
-        p:'MM/v1', m:palletMethod, d:remarkData||{}, t:Math.floor(Date.now()/1000)
-      });
-      const remark = remarkPayload.length > 400 ? remarkPayload.slice(0,397)+'...' : remarkPayload;
-      addLog(`⛓ Signing: ${logLabel}… (wallet popup ayega)`,'info');
-      const result = await sendSignedRemark(rpcClient, WALLET.signer, WALLET.address, remark);
-      const txStr = typeof result.txHash==='string' ? result.txHash : result.txHash?.toString?.() || hash(logLabel+Date.now());
-      addLog(`✅ [⛓ ONCHAIN] Tx: ${txStr.slice(0,20)}… | Block: ${result.blockNumber}`,'ok');
-      return { txHash: txStr, blockNumber: result.blockNumber, local: false };
-    }catch(e){
-      addLog(`Tx error: ${e.message} — locally saved`,'err');
-      return { txHash: hash(logLabel+Date.now()), blockNumber: nextBlock(), local: true };
+    if(!rpcClient || !rpcClient.connected){
+      throw new Error('Konnex Testnet se connect nahi ho pa raha — network check karo aur dobara try karo');
     }
   }
 
-  // ── CASE 5: RPC still down after reconnect attempt
-  addLog(`[LOCAL] ${logLabel} — RPC unreachable, locally saved`,'warn');
-  return { txHash: hash(logLabel+Date.now()), blockNumber: nextBlock(), local: true };
+  // ── CASE 3: Signer + RPC both available → REAL TX with proper popup ✅
+  try{
+    const remarkPayload = JSON.stringify({
+      p:'MM/v1', m:palletMethod, d:remarkData||{}, t:Math.floor(Date.now()/1000)
+    });
+    const remark = remarkPayload.length > 400 ? remarkPayload.slice(0,397)+'...' : remarkPayload;
+    addLog(`⛓ Signing: ${logLabel}… (wallet mein approve karo)`,'info');
+    const result = await sendSignedRemark(rpcClient, WALLET.signer, WALLET.address, remark);
+    const txStr = typeof result.txHash==='string' ? result.txHash : result.txHash?.toString?.() || hash(logLabel+Date.now());
+    addLog(`✅ [⛓ ONCHAIN] Tx: ${txStr.slice(0,20)}… | Block: ${result.blockNumber}`,'ok');
+    return { txHash: txStr, blockNumber: result.blockNumber, local: false };
+  }catch(e){
+    // User rejected or wallet error — propagate UP, do NOT save locally
+    addLog(`❌ Tx failed/rejected: ${e.message}`,'err');
+    throw new Error(e.message.includes('Rejected') || e.message.includes('cancel') || e.message.includes('denied')
+      ? 'Transaction reject kar diya — wallet mein Approve dabao'
+      : `Transaction failed: ${e.message}`);
+  }
 }
 
 /**
@@ -1214,26 +1245,18 @@ async function registerRobotCore(owner, hw, label, type='drone'){
   const { robotId, hwHash } = buildRobotId(owner, hw);
   if(DB.robots.find(r=>r.hardware_hash===hwHash)) throw new Error('Hardware fingerprint already registered');
 
-  // Try onchain
-  let txHash = null, blockNumber = nextBlock(), localTx = true;
-  try{
-    const result = await sendExtrinsic(
-      `${PALLET}.registerRobot`,
-      ['0x'+hwHash, label||'Robot', type||'drone'],
-      `registerRobot(${hwHash.slice(0,12)}, ${label})`,
-      { robotId, hwHash, label, type, owner }
-    );
-    txHash = result.txHash;
-    blockNumber = result.blockNumber;
-    localTx = result.local;
-  }catch(e){
-    addLog('registerRobot tx failed: '+e.message,'err');
-  }
+  // Onchain ONLY — throws if wallet not connected or tx fails
+  const result = await sendExtrinsic(
+    `${PALLET}.registerRobot`,
+    ['0x'+hwHash, label||'Robot', type||'drone'],
+    `registerRobot(${hwHash.slice(0,12)}, ${label})`,
+    { robotId, hwHash, label, type, owner }
+  );
 
   const robot = {
     robot_id: robotId, hardware_hash: hwHash, owner_address: owner,
     registered_at: now(), metadata:{ label: label||'Robot', type: type||'drone' },
-    tx_hash: txHash, block_number: blockNumber, local: localTx
+    tx_hash: result.txHash, block_number: result.blockNumber, local: false
   };
   DB.robots.push(robot);
   DB.reputation[robotId] = { score:0, total_tasks:0, successful_tasks:0, last_updated:now() };
@@ -1251,29 +1274,21 @@ async function postTaskCore(instr, type, reward, poster, robotId=null){
   const instrHash = hash(instr+'::'+poster+'::'+Math.random());
   const taskId    = instrHash;
 
-  // Try onchain
-  let txHash = null, blockNumber = nextBlock(), localTx = true;
-  try{
-    const rewardPlanck = Math.round(reward * 1_000_000_000); // 9 decimals (tKNX = 9 decimals per Talisman)
-    const result = await sendExtrinsic(
-      `${PALLET}.postTask`,
-      ['0x'+instrHash.slice(2,66), type, rewardPlanck, robotId||null],
-      `postTask(${type}, ${reward}KNX)`,
-      { taskId, type, reward, poster, instrHash }
-    );
-    txHash = result.txHash;
-    blockNumber = result.blockNumber;
-    localTx = result.local;
-  }catch(e){
-    addLog('postTask tx failed: '+e.message,'err');
-  }
+  // Onchain ONLY — throws if wallet not connected or tx fails
+  const rewardPlanck = Math.round(reward * 1_000_000_000);
+  const result = await sendExtrinsic(
+    `${PALLET}.postTask`,
+    ['0x'+instrHash.slice(2,66), type, rewardPlanck, robotId||null],
+    `postTask(${type}, ${reward}KNX)`,
+    { taskId, type, reward, poster, instrHash }
+  );
 
   const task = {
     task_id: taskId, robot_id: robotId, task_type: type, instruction: instr.trim(),
     reward_knx: reward, poster_address: poster, status:'open',
     created_at: now(), completed_at:null, policy_hash:null,
-    block_number: blockNumber, popw_score:null,
-    tx_hash: txHash, local: localTx
+    block_number: result.blockNumber, popw_score:null,
+    tx_hash: result.txHash, local: false
   };
   DB.tasks.push(task);
   return task;
@@ -1345,64 +1360,46 @@ function simulateTelemetry(taskType, round2=false){
 //  CORE — Submit PoPW + Write Memory (ONCHAIN)
 // ════════════════════════════════════════════
 async function submitPoPWOnchain(robotId, taskId, scores){
-  try{
-    const popwInt = Math.round(scores.popw * 10000); // 4 decimal places as int
-    const result = await sendExtrinsic(
-      `${PALLET}.submitPopw`,
-      ['0x'+robotId.slice(2,66), '0x'+taskId.slice(2,66), popwInt, Math.round(scores.safety*10000), Math.round(scores.match*10000), Math.round(scores.eff*10000)],
-      `submitPoPW(${robotId.slice(0,12)}, score=${scores.popw})`,
-      { robotId: robotId.slice(0,16), taskId: taskId.slice(0,16), scores }
-    );
-    return result;
-  }catch(e){
-    return { txHash: hash('popw'+Date.now()), blockNumber: nextBlock(), local: true };
-  }
+  const popwInt = Math.round(scores.popw * 10000);
+  const result = await sendExtrinsic(
+    `${PALLET}.submitPopw`,
+    ['0x'+robotId.slice(2,66), '0x'+taskId.slice(2,66), popwInt, Math.round(scores.safety*10000), Math.round(scores.match*10000), Math.round(scores.eff*10000)],
+    `submitPoPW(${robotId.slice(0,12)}, score=${scores.popw})`,
+    { robotId: robotId.slice(0,16), taskId: taskId.slice(0,16), scores }
+  );
+  return result;
 }
 
 async function writeMemoryOnchain(robotId, taskId, taskType, instruction, strategy, scores, validatorAddr, block, telemetry){
-  // Local state
+  const instrHash = hash(instruction+robotId);
+  const result = await sendExtrinsic(
+    `${PALLET}.writeMemory`,
+    ['0x'+robotId.slice(2,66), '0x'+taskId.slice(2,66), taskType, '0x'+instrHash.slice(2,66), Math.round(scores.popw*10000)],
+    `writeMemory(${robotId.slice(0,12)}, ${taskType}, popw=${scores.popw})`,
+    { robotId: robotId.slice(0,16), taskId: taskId.slice(0,16), taskType, strategy, popw: scores.popw }
+  );
+
   const entry = {
     entry_id: DB.memory.length+1, robot_id: robotId, task_id: taskId,
     task_type: taskType, instruction, popw_score: scores.popw,
     safety_score: scores.safety, task_match: scores.match, efficiency: scores.eff,
-    validator_addr: validatorAddr, block_number: block, executed_at: now(),
+    validator_addr: validatorAddr, block_number: result.blockNumber, executed_at: now(),
     telemetry: {...telemetry, strategy},
-    tx_hash: null, local: true
+    tx_hash: result.txHash, local: false
   };
-
-  // Onchain
-  try{
-    const instrHash = hash(instruction+robotId);
-    const result = await sendExtrinsic(
-      `${PALLET}.writeMemory`,
-      ['0x'+robotId.slice(2,66), '0x'+taskId.slice(2,66), taskType, '0x'+instrHash.slice(2,66), Math.round(scores.popw*10000)],
-      `writeMemory(${robotId.slice(0,12)}, ${taskType}, popw=${scores.popw})`,
-      { robotId: robotId.slice(0,16), taskId: taskId.slice(0,16), taskType, strategy, popw: scores.popw }
-    );
-    entry.tx_hash = result.txHash;
-    entry.local   = result.local;
-    entry.block_number = result.blockNumber;
-  }catch(e){
-    addLog('writeMemory tx failed: '+e.message,'err');
-  }
-
   DB.memory.push(entry);
   updateRepLocal(robotId, scores, scores.popw>=.5);
   return entry;
 }
 
 async function updateReputationOnchain(robotId, scores){
-  try{
-    const result = await sendExtrinsic(
-      `${PALLET}.updateReputation`,
-      ['0x'+robotId.slice(2,66), Math.round(scores.popw*10000)],
-      `updateReputation(${robotId.slice(0,12)}, score=${scores.popw})`,
-      { robotId: robotId.slice(0,16), popw: scores.popw }
-    );
-    return result;
-  }catch(e){
-    return { local: true };
-  }
+  const result = await sendExtrinsic(
+    `${PALLET}.updateReputation`,
+    ['0x'+robotId.slice(2,66), Math.round(scores.popw*10000)],
+    `updateReputation(${robotId.slice(0,12)}, score=${scores.popw})`,
+    { robotId: robotId.slice(0,16), popw: scores.popw }
+  );
+  return result;
 }
 
 function updateRepLocal(robotId, scores, ok){
@@ -1605,9 +1602,11 @@ async function connectAnyWallet(){
 
 async function connectManual(){
   const addr = document.getElementById('manual-address').value.trim();
-  if(!addr||addr.length<10){ toast('Invalid address','error'); return; }
-  await setWalletConnected(addr, 'Manual (Read-Only)', null, true);
-  closeWalletModal();
+  if(!addr||addr.length<10){ toast('Valid Substrate address enter karo','error'); return; }
+  // Read-only — no signing possible, warn user
+  toast('⚠️ Read-only mode — transactions sign nahi ho sakenge. SubWallet ya Talisman extension use karo.','error');
+  addLog('Manual address mode: read-only — koi bhi onchain action nahi hoga','warn');
+  // Do NOT connect — all features require a real signer
 }
 
 async function setWalletConnected(address, name, signer=null, readOnly=false){
@@ -1872,30 +1871,40 @@ function renderTasks(){
 async function quickRunTask(taskId){
   const task=DB.tasks.find(t=>t.task_id===taskId);
   if(!task||task.status!=='open') return;
+  if(!WALLET.connected || !WALLET.signer || WALLET.readOnly){
+    toast('Wallet connect karo pehle — task run onchain hoti hai','error');
+    return;
+  }
   const robot=DB.robots[0];
-  if(!robot){ toast('Register a robot first','error'); return; }
+  if(!robot){ toast('Pehle ek robot register karo','error'); return; }
   const policy=generatePolicy(task,robot.robot_id);
   const ph=hash(JSON.stringify(policy));
   task.status='assigned'; task.robot_id=robot.robot_id; task.policy_hash=ph;
   task.status='executing';
   const tele=simulateTelemetry(task.task_type,false);
   const scores=scorePoPW(tele,task.task_type);
-  const block=currentBlock||nextBlock();
 
-  // Submit PoPW onchain
-  const popwResult = await submitPoPWOnchain(robot.robot_id, task.task_id, scores);
-  task.popw_score=scores.popw; task.block_number=popwResult.blockNumber;
-  task.status=scores.popw>=.5?'completed':'failed';
-  if(task.status==='completed') task.completed_at=now();
-  task.tx_hash=popwResult.txHash;
+  try{
+    // Submit PoPW onchain
+    const popwResult = await submitPoPWOnchain(robot.robot_id, task.task_id, scores);
+    task.popw_score=scores.popw; task.block_number=popwResult.blockNumber;
+    task.status=scores.popw>=.5?'completed':'failed';
+    if(task.status==='completed') task.completed_at=now();
+    task.tx_hash=popwResult.txHash;
 
-  // Write memory onchain
-  await writeMemoryOnchain(robot.robot_id,task.task_id,task.task_type,task.instruction,
-    policy.strategy,scores,WALLET.address||'5FHne…',block,tele);
-  await updateReputationOnchain(robot.robot_id, scores);
+    // Write memory onchain
+    await writeMemoryOnchain(robot.robot_id,task.task_id,task.task_type,task.instruction,
+      policy.strategy,scores,WALLET.address,popwResult.blockNumber,tele);
+    await updateReputationOnchain(robot.robot_id, scores);
 
-  addLog(`PoPW ⛓: [${task.task_type}] score=${scores.popw.toFixed(3)} ${task.status==='completed'?'✅':'❌'}`,'ok');
-  toast(`Task PoPW submitted — Score: ${scores.popw.toFixed(3)}`,'success');
+    addLog(`PoPW ⛓: [${task.task_type}] score=${scores.popw.toFixed(3)} ${task.status==='completed'?'✅':'❌'}`,'ok');
+    toast(`Task PoPW submitted onchain — Score: ${scores.popw.toFixed(3)}`,'success');
+  }catch(e){
+    task.status='open'; // revert status on failure
+    task.policy_hash=null; task.robot_id=null;
+    toast('Task run failed: '+e.message,'error');
+    addLog('quickRunTask error: '+e.message,'err');
+  }
   renderTasks(); renderOverview();
 }
 
@@ -2111,6 +2120,24 @@ function setStep(n,state){
 
 async function runSimulation(){
   const btn=document.getElementById('sim-btn');
+
+  // ── HARD BLOCK: wallet required
+  if(!WALLET.connected || !WALLET.signer || WALLET.readOnly){
+    toast('Wallet connect karo pehle — simulator onchain mode mein hai','error');
+    addLog('🚫 Simulator blocked — extension wallet (SubWallet/Talisman) required','err');
+    document.getElementById('sim-log').innerHTML='<div class="log-line log-err">🚫 Wallet connect nahi hai — SubWallet ya Talisman se connect karo phir simulator chalao.</div>';
+    return;
+  }
+  if(!rpcClient || !rpcClient.connected){
+    addLog('Chain se connect ho raha hoon…','info');
+    await initChain();
+    if(!rpcClient || !rpcClient.connected){
+      toast('Konnex Testnet se connect nahi ho pa raha','error');
+      document.getElementById('sim-log').innerHTML='<div class="log-line log-err">❌ Konnex Testnet offline — network check karo aur dobara try karo.</div>';
+      return;
+    }
+  }
+
   btn.disabled=true; btn.innerHTML='<span class="spin"></span> Running Onchain…';
   document.getElementById('sim-log').innerHTML='';
   document.getElementById('sim-results-card').style.display='none';
@@ -2123,30 +2150,28 @@ async function runSimulation(){
   const noise=document.getElementById('sim-noise').value;
   const noiseMap={low:.03,medium:.08,high:.18};
   const noiseLevel=noiseMap[noise]||.08;
-  const useWallet=WALLET.connected&&!WALLET.readOnly;
 
   simLog('━━━━━━ MemoryMesh AI Onchain Simulation ━━━━━━','info');
   simLog(`Config: ${numRobots} robots × ${tasksPerRobot} tasks × ${rounds} rounds · noise=${noise}`,'info');
-  simLog(`Chain: ${chainApi?'CONNECTED ✅':'OFFLINE (local mode)'}  Wallet: ${useWallet?WALLET.address.slice(0,14)+'…':'Not connected (local)'}`,'info');
+  simLog(`Chain: CONNECTED ✅  Wallet: ${WALLET.address.slice(0,14)}… (${WALLET.name})`,'info');
   await sleep(200);
 
   // STEP 1 — Register robots onchain
   setStep(1,'active'); simLog('\n[1] Registering robots → memorymesh.registerRobot()…','info');
   const simRobots=[];
-  const owner=WALLET.address||OWNER_ADDR;
+  const owner=WALLET.address;
   for(let i=0;i<numRobots;i++){
     const cfg=ROBOT_CFGS[i%ROBOT_CFGS.length];
     const hw={...cfg.hw, serial:'SIM'+Date.now()+i};
     let robot;
     try{
       robot=await registerRobotCore(owner, hw, cfg.label+' #'+i, cfg.type);
-    }catch(e){
-      robot=DB.robots.find(r=>r.metadata?.label?.startsWith(cfg.label));
-    }
-    if(robot){
       simRobots.push(robot);
-      const chainTag=robot.local?'[local]':'[⛓ onchain]';
-      simLog(`  ✅ ${cfg.label}: ${shortId(robot.robot_id)} ${chainTag}`,'ok');
+      simLog(`  ✅ [⛓] ${cfg.label}: ${shortId(robot.robot_id)}`,'ok');
+    }catch(e){
+      simLog(`  ❌ registerRobot failed: ${e.message} — simulation roka ja raha hai`,'err');
+      btn.disabled=false; btn.innerHTML='⛓ Run Onchain Simulation';
+      return;
     }
     await sleep(80);
   }
@@ -2157,10 +2182,16 @@ async function runSimulation(){
   for(const robot of simRobots){
     for(let ti=0;ti<tasksPerRobot;ti++){
       const [ttype,instr,reward]=TASK_DEFS[ti%TASK_DEFS.length];
-      const task=await postTaskCore(instr,ttype,reward,owner,robot.robot_id);
-      allPostedTasks.push({task,robot});
-      const chainTag=task.local?'[local]':'[⛓]';
-      simLog(`  📋 ${chainTag} [${ttype.padEnd(12)}] ${instr.slice(0,38)}… ${reward}KNX`,'info');
+      let task;
+      try{
+        task=await postTaskCore(instr,ttype,reward,owner,robot.robot_id);
+        allPostedTasks.push({task,robot});
+        simLog(`  📋 [⛓] [${ttype.padEnd(12)}] ${instr.slice(0,38)}… ${reward}KNX`,'info');
+      }catch(e){
+        simLog(`  ❌ postTask failed: ${e.message} — simulation roka ja raha hai`,'err');
+        btn.disabled=false; btn.innerHTML='⛓ Run Onchain Simulation';
+        return;
+      }
       await sleep(50);
     }
   }
@@ -2176,14 +2207,25 @@ async function runSimulation(){
     // STEP 3 — Miners read memory from chain
     setStep(3,'active'); simLog('\n[3] Miners querying memory → chain.getMemory()…','info');
     const roundPairs=[];
-    const tasksThisRound=isR2?simRobots.map(robot=>{
-      const [ttype,instr,reward]=TASK_DEFS[Math.floor(rand(0,TASK_DEFS.length))];
-      // sync post for round 2 (no await to keep it fast)
-      const taskId=hash(instr+robot.robot_id+Math.random());
-      const task={task_id:taskId,robot_id:robot.robot_id,task_type:ttype,instruction:instr+' [r'+round+']',reward_knx:reward,poster_address:owner,status:'open',created_at:now(),completed_at:null,policy_hash:null,block_number:null,popw_score:null,tx_hash:null,local:true};
-      DB.tasks.push(task);
-      return {task,robot};
-    }):allPostedTasks;
+    // Round 2+: post NEW tasks onchain (no local shortcut)
+    let tasksThisRound;
+    if(isR2){
+      tasksThisRound = [];
+      for(const robot of simRobots){
+        const [ttype,instr,reward]=TASK_DEFS[Math.floor(rand(0,TASK_DEFS.length))];
+        try{
+          const task=await postTaskCore(instr+' [r'+round+']',ttype,reward,owner,robot.robot_id);
+          tasksThisRound.push({task,robot});
+        }catch(e){
+          simLog(`  ❌ Round ${round} postTask failed: ${e.message}`,'err');
+          btn.disabled=false; btn.innerHTML='⛓ Run Onchain Simulation';
+          return;
+        }
+        await sleep(30);
+      }
+    } else {
+      tasksThisRound = allPostedTasks;
+    }
 
     for(const {task,robot} of tasksThisRound){
       const policy=generatePolicy(task,robot.robot_id);
@@ -2217,18 +2259,37 @@ async function runSimulation(){
       const accepted=scores.popw>=.5;
 
       // Submit PoPW onchain
-      const popwResult=await submitPoPWOnchain(robot.robot_id,task.task_id,scores);
+      let popwResult;
+      try{
+        popwResult=await submitPoPWOnchain(robot.robot_id,task.task_id,scores);
+      }catch(e){
+        simLog(`  ❌ submitPoPW failed: ${e.message}`,'err');
+        btn.disabled=false; btn.innerHTML='⛓ Run Onchain Simulation';
+        return;
+      }
       const block=popwResult.blockNumber;
-      const chainTag=popwResult.local?'[local]':'[⛓]';
 
       // STEP 6 — Write memory onchain
       setStep(6,'active');
-      const entry=await writeMemoryOnchain(robot.robot_id,task.task_id,task.task_type,
-        task.instruction,policy.strategy,scores,WALLET.address||VALIDATOR_ADDR,block,tele);
+      let entry;
+      try{
+        entry=await writeMemoryOnchain(robot.robot_id,task.task_id,task.task_type,
+          task.instruction,policy.strategy,scores,WALLET.address,block,tele);
+      }catch(e){
+        simLog(`  ❌ writeMemory failed: ${e.message}`,'err');
+        btn.disabled=false; btn.innerHTML='⛓ Run Onchain Simulation';
+        return;
+      }
 
       // STEP 7 — Update reputation onchain
       setStep(7,'active');
-      await updateReputationOnchain(robot.robot_id, scores);
+      try{
+        await updateReputationOnchain(robot.robot_id, scores);
+      }catch(e){
+        simLog(`  ❌ updateReputation failed: ${e.message}`,'err');
+        btn.disabled=false; btn.innerHTML='⛓ Run Onchain Simulation';
+        return;
+      }
 
       t.popw_score=scores.popw; t.block_number=block;
       t.status=accepted?'completed':'failed';
@@ -2240,7 +2301,7 @@ async function runSimulation(){
       lastArtifact={task:t,robot,policy,scores,block,tele,txHash:popwResult.txHash};
 
       const icon=accepted?'✅':'❌';
-      simLog(`  ${icon} ${chainTag} ${robot.metadata.label.padEnd(14)} [${task.task_type.padEnd(12)}] PoPW=${scores.popw.toFixed(3)}  S=${scores.safety.toFixed(2)} M=${scores.match.toFixed(2)} E=${scores.eff.toFixed(2)}`,'ok');
+      simLog(`  ${icon} [⛓] ${robot.metadata.label.padEnd(14)} [${task.task_type.padEnd(12)}] PoPW=${scores.popw.toFixed(3)}  S=${scores.safety.toFixed(2)} M=${scores.match.toFixed(2)} E=${scores.eff.toFixed(2)}`,'ok');
       await sleep(40);
     }
 
@@ -2294,7 +2355,7 @@ async function runSimulation(){
       <div class="stat-card" style="--accent:var(--cyan)"><div class="stat-label">Robots</div><div class="stat-value c-cyan">${simRobots.length}</div></div>
       <div class="stat-card" style="--accent:var(--purple)"><div class="stat-label">PoPW Events</div><div class="stat-value c-purple">${totalPoPW}</div></div>
       <div class="stat-card" style="--accent:var(--green)"><div class="stat-label">Accepted</div><div class="stat-value c-green">${totalAccepted}<span style="font-size:.9rem"> (${totalPoPW?((totalAccepted/totalPoPW)*100).toFixed(0):0}%)</span></div></div>
-      <div class="stat-card" style="--accent:var(--orange)"><div class="stat-label">Chain Mode</div><div class="stat-value" style="font-size:1rem">${chainApi?'<span style="color:var(--green)">⛓ Live</span>':'<span style="color:var(--yellow)">Local</span>'}</div></div>
+      <div class="stat-card" style="--accent:var(--orange)"><div class="stat-label">Chain Mode</div><div class="stat-value" style="font-size:1rem"><span style="color:var(--green)">⛓ Live Onchain</span></div></div>
       ${impr?`<div class="stat-card" style="--accent:var(--yellow)"><div class="stat-label">Score Improvement</div><div class="stat-value ${+impr>=0?'c-green':'c-red'}">${+impr>=0?'+':''}${impr}%</div><div class="stat-sub">R1 → R${rounds} avg PoPW</div></div>`:''}
     </div>
     <div class="table-wrap"><table>

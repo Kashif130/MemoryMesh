@@ -10,11 +10,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
 
-<!-- @polkadot/api CDN — handles CheckMetadataHash, SCALE encoding, extrinsic building automatically -->
-<script src="https://cdn.jsdelivr.net/npm/@polkadot/util@13/bundle-polkadot-util.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@polkadot/util-crypto@13/bundle-polkadot-util-crypto.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@polkadot/types@10/bundle-polkadot-types.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@polkadot/api@10/bundle-polkadot-api.min.js"></script>
 
 <style>
 /* ═══════════ RESET & ROOT ═══════════ */
@@ -724,6 +719,15 @@ select option{background:var(--card);}
   </div>
 </div>
 
+<!-- @polkadot/api v16 ESM loader — exposes ApiPromise + WsProvider globally -->
+<script type="module">
+  import { ApiPromise, WsProvider } from 'https://cdn.jsdelivr.net/npm/@polkadot/api@16.5.6/+esm';
+  window.PolkadotApiPromise  = ApiPromise;
+  window.PolkadotWsProvider  = WsProvider;
+  window.__polkadotApiLoaded = true;
+  console.log('[MemoryMesh] @polkadot/api v16 loaded ✅');
+</script>
+
 <!-- ═══════════ JAVASCRIPT — FULL ONCHAIN ENGINE ═══════════ -->
 <script>
 'use strict';
@@ -804,23 +808,25 @@ function explorerBlockLink(blk){ return `<a class="tx-link" href="${EXPLORER}/bl
 //  ✅ Talisman + SubWallet signing
 // ════════════════════════════════════════════
 
-// polkadotApi global is exposed by the CDN bundle as window.polkadotApi
-// We wait for it to load before connecting.
+// ════════════════════════════════════════════
+//  CHAIN CONNECTION — @polkadot/api v16 (ESM)
+//  Loaded via <script type="module"> in <head>
+//  Exposes: window.PolkadotApiPromise, window.PolkadotWsProvider
+//  Automatically handles:
+//  ✅ CheckMetadataHash (v16 full support)
+//  ✅ Correct SCALE encoding + call indices
+//  ✅ Talisman v3.6.1 + SubWallet signing
+// ════════════════════════════════════════════
 
-function getPolkadotApi(){
-  // CDN bundle exposes the API differently depending on version
-  // Try multiple global names
-  return window.polkadotApi || window['@polkadot/api'] || null;
-}
-
-async function waitForPolkadotApi(timeoutMs = 15000){
+async function waitForPolkadotApi(timeoutMs = 20000){
   const start = Date.now();
   while(Date.now() - start < timeoutMs){
-    const lib = getPolkadotApi();
-    if(lib && lib.ApiPromise) return lib;
-    await new Promise(r => setTimeout(r, 100));
+    if(window.__polkadotApiLoaded && window.PolkadotApiPromise && window.PolkadotWsProvider){
+      return { ApiPromise: window.PolkadotApiPromise, WsProvider: window.PolkadotWsProvider };
+    }
+    await new Promise(r => setTimeout(r, 150));
   }
-  throw new Error('@polkadot/api CDN bundle did not load within timeout');
+  throw new Error('@polkadot/api v16 ESM did not load in time. Check network/CDN.');
 }
 
 async function initChain(){
@@ -831,15 +837,14 @@ async function initChain(){
   const subnetEl = document.getElementById('subnet-chain-status');
   statusEl.className = 'chain-status connecting';
   statusEl.textContent = 'Connecting...';
-  addLog('Mode: @polkadot/api CDN (auto CheckMetadataHash + SCALE)','info');
+  addLog('Mode: @polkadot/api v16 ESM CDN','info');
 
-  // Wait for CDN bundle
-  let lib;
+  let ApiPromise, WsProvider;
   try{
-    lib = await waitForPolkadotApi();
-    addLog('✅ @polkadot/api loaded from CDN','ok');
+    ({ ApiPromise, WsProvider } = await waitForPolkadotApi());
+    addLog('✅ @polkadot/api v16 ready','ok');
   }catch(e){
-    addLog('❌ @polkadot/api CDN load failed: ' + e.message,'err');
+    addLog('❌ CDN load failed: ' + e.message,'err');
     chainConnecting = false;
     statusEl.className = 'chain-status error';
     statusEl.textContent = 'CDN Error';
@@ -847,40 +852,34 @@ async function initChain(){
     return null;
   }
 
-  const { ApiPromise, WsProvider } = lib;
-
   for(const wsUrl of KONNEX_WS_ENDPOINTS){
     try{
-      addLog('Trying RPC: ' + wsUrl,'info');
-      const provider = new WsProvider(wsUrl, 5000); // 5s reconnect
-      const api = await ApiPromise.create({
-        provider,
-        throwOnConnect: true,
-        throwOnUnknown: false,
-      });
-
+      addLog('Trying: ' + wsUrl,'info');
+      const provider = new WsProvider(wsUrl, 5000);
+      const api = await ApiPromise.create({ provider, throwOnConnect: true, throwOnUnknown: false });
       await api.isReady;
+
       const chain = (await api.rpc.system.chain()).toString();
-      addLog('⛓ Connected via @polkadot/api: ' + chain,'ok');
+      const version = api.runtimeVersion.specVersion.toNumber();
+      addLog(`⛓ Connected: ${chain} (spec v${version})`,'ok');
 
       chainApi = api;
       chainConnecting = false;
-
       statusEl.className = 'chain-status connected';
       statusEl.textContent = 'Chain: ' + chain;
       if(subnetEl) subnetEl.innerHTML = '<span class="badge bg-green">Connected</span>';
 
-      // Subscribe to new heads for block number
+      // Subscribe to new heads
       await api.rpc.chain.subscribeNewHeads(header => {
         currentBlock = header.number.toNumber();
-        blockNum = currentBlock;
+        blockNum     = currentBlock;
         const el = document.getElementById('s-block');
         if(el) el.textContent = currentBlock.toLocaleString();
       });
 
       return api;
     }catch(e){
-      addLog('WSS failed (' + wsUrl + '): ' + e.message,'warn');
+      addLog('Failed (' + wsUrl + '): ' + e.message,'warn');
     }
   }
 
@@ -897,12 +896,12 @@ async function initChain(){
 // ════════════════════════════════════════════
 
 /**
- * @polkadot/api se system.remark transaction sign aur submit karo.
- * Api automatically handles:
- *   ✅ CheckMetadataHash extension (mode byte automatic)
- *   ✅ Correct nonce, era, tip
- *   ✅ SCALE encoding
- *   ✅ Talisman + SubWallet signer injection
+ * @polkadot/api v16 — system.remark sign + submit
+ *
+ * v16 key changes vs v10:
+ * - signAndSend callback: status.type checks (not .isInBlock boolean in some builds)
+ * - CheckMetadataHash: handled AUTOMATICALLY by api when it reads chain metadata
+ * - nonce: pass { nonce: -1 } to let api auto-fetch latest nonce (avoids stale nonce errors)
  *
  * Returns { txHash, blockNumber, local: false }
  */
@@ -916,52 +915,63 @@ async function sendExtrinsicViaApi(api, signer, address, palletMethod, remarkDat
 
   return new Promise((resolve, reject) => {
     let resolved = false;
-    let unsub;
+    let unsub = null;
+
+    const done = (val) => { if(!resolved){ resolved=true; if(unsub) try{unsub();}catch(e){} if(val instanceof Error) reject(val); else resolve(val); } };
 
     api.tx.system.remark(remark)
-      .signAndSend(address, { signer }, (result) => {
-        const { status, dispatchError, txHash } = result;
+      .signAndSend(
+        address,
+        { signer, nonce: -1 },   // nonce:-1 = auto-fetch from chain
+        (result) => {
+          const status = result.status;
+          const dispatchError = result.dispatchError;
+          const txHash = result.txHash?.toString() || '';
 
-        if(dispatchError){
-          if(unsub) unsub();
-          if(resolved) return;
-          resolved = true;
-          if(dispatchError.isModule){
-            try{
-              const decoded = api.registry.findMetaError(dispatchError.asModule);
-              reject(new Error(`Chain error: ${decoded.section}.${decoded.name} — ${decoded.docs.join(' ')}`));
-            }catch(e){
-              reject(new Error('Transaction dispatch error: ' + dispatchError.toString()));
+          // Dispatch errors (chain-level rejection)
+          if(dispatchError){
+            let errMsg = 'Transaction dispatch error';
+            if(dispatchError.isModule){
+              try{
+                const m = api.registry.findMetaError(dispatchError.asModule);
+                errMsg = `Chain error: ${m.section}.${m.name}`;
+                if(m.docs?.length) errMsg += ' — ' + m.docs.join(' ');
+              }catch(e){ errMsg = 'Module error: ' + dispatchError.toString(); }
+            } else if(dispatchError.isBadOrigin){
+              errMsg = 'Bad origin — wrong account';
+            } else {
+              errMsg = dispatchError.toString();
             }
-          } else {
-            reject(new Error('Transaction error: ' + dispatchError.toString()));
+            done(new Error(errMsg));
+            return;
           }
-          return;
-        }
 
-        if(status.isInBlock){
-          if(unsub) unsub();
-          if(resolved) return;
-          resolved = true;
-          const blockHash = status.asInBlock.toString();
-          const txStr = txHash.toString();
-          addLog(`✅ [⛓ ONCHAIN] Tx: ${txStr.slice(0,20)}… | In Block: ${blockHash.slice(0,16)}…`,'ok');
-          // Get block number from hash
-          api.rpc.chain.getHeader(status.asInBlock).then(header => {
-            resolve({ txHash: txStr, blockNumber: header.number.toNumber(), local: false });
-          }).catch(() => {
-            resolve({ txHash: txStr, blockNumber: blockNum, local: false });
-          });
+          // Status: inBlock = accepted, finalized = confirmed
+          const statusStr = status.type || status.toString();
+
+          if(status.isInBlock || statusStr === 'InBlock'){
+            const blockHash = (status.asInBlock || status.value)?.toString() || '';
+            addLog(`✅ [⛓] ${logLabel} in block! tx: ${txHash.slice(0,18)}…`,'ok');
+            api.rpc.chain.getHeader(blockHash || status.asInBlock)
+              .then(h => done({ txHash, blockNumber: h.number.toNumber(), local: false }))
+              .catch(() => done({ txHash, blockNumber: blockNum, local: false }));
+          }
+
+          if(status.isFinalized || statusStr === 'Finalized'){
+            addLog(`⛓ Finalized: ${txHash.slice(0,18)}…`,'ok');
+          }
+
+          // Terminal statuses that aren't success
+          if(['Invalid', 'Usurped', 'Dropped', 'FinalityTimeout'].includes(statusStr)){
+            done(new Error(`Transaction ${statusStr.toLowerCase()} — dobara try karo`));
+          }
         }
-      })
+      )
       .then(u => { unsub = u; })
       .catch(e => {
-        if(resolved) return;
-        resolved = true;
-        const msg = e.message || '';
-        const cancelled = msg.toLowerCase().includes('cancel') || msg.toLowerCase().includes('reject') ||
-                          msg.includes('denied') || msg.includes('dismissed') || msg.includes('1010');
-        reject(new Error(cancelled
+        const msg = e?.message || String(e);
+        const cancelled = /cancel|reject|denied|dismiss|1010/i.test(msg);
+        done(new Error(cancelled
           ? 'Transaction cancel kar diya — wallet mein Approve dabao'
           : 'Signing failed: ' + msg
         ));

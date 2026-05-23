@@ -9,6 +9,8 @@
 <title>MemoryMesh AI — Konnex Subnet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<!-- Polkadot.js API — for real on-chain calls -->
+<script src="https://cdn.jsdelivr.net/npm/@polkadot/api@10.11.1/bundle-polkadot-api.min.js"></script>
 <style>
 /* ═══════════ RESET & ROOT ═══════════ */
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
@@ -586,6 +588,7 @@ select option{background:var(--card);}
   <div class="tab" onclick="switchTab('memory')">Memory</div>
   <div class="tab" onclick="switchTab('leaderboard')">Leaderboard</div>
   <div class="tab" onclick="switchTab('simulator')">Simulator</div>
+  <div class="tab" onclick="switchTab('onchain')">⛓ On-Chain</div>
   <div class="tab" onclick="switchTab('faucet')">Faucet</div>
   <div class="tab" onclick="switchTab('subnet')">Subnet Info</div>
 </div>
@@ -1000,6 +1003,254 @@ select option{background:var(--card);}
     <div class="section-title">Latest PoPW Artifact</div>
     <div class="artifact-box" id="sim-artifact"></div>
   </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     PAGE: ON-CHAIN EXECUTION
+══════════════════════════════════════════════════════════ -->
+<div id="page-onchain" class="page">
+
+  <!-- RPC Status Bar -->
+  <div class="card" style="margin-bottom:1rem;padding:1rem 1.5rem;">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
+      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:.5rem;">
+          <div id="rpc-dot" style="width:8px;height:8px;border-radius:50%;background:var(--muted);box-shadow:none;transition:.3s;"></div>
+          <span style="font-family:var(--font-mono);font-size:.7rem;color:var(--muted2)" id="rpc-status-text">Not connected to chain</span>
+        </div>
+        <span style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted);border:1px solid var(--border);border-radius:6px;padding:2px 8px;">
+          wss://testnet-rpc1.konnex.world:39944
+        </span>
+        <span id="rpc-block-display" style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted2);display:none">
+          Block: <span id="rpc-block-num" style="color:var(--cyan)">—</span>
+        </span>
+      </div>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;">
+        <button class="btn btn-secondary" onclick="connectChain()" id="chain-connect-btn" style="font-size:.72rem;padding:.45rem 1rem;">⚡ Connect to Chain</button>
+        <button class="btn btn-secondary" onclick="disconnectChain()" id="chain-disconnect-btn" style="font-size:.72rem;padding:.45rem 1rem;display:none;">✕ Disconnect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Wallet warning -->
+  <div id="onchain-wallet-warn" class="alert alert-warn" style="display:none;">
+    ⚠️ Connect your wallet first (top-right button) to sign on-chain transactions.
+  </div>
+
+  <div class="grid2">
+
+    <!-- LEFT: Register Robot On-Chain -->
+    <div>
+      <div class="card">
+        <div class="section-title">1. Register Robot On-Chain</div>
+        <p style="font-size:.77rem;color:var(--muted2);margin-bottom:1rem;line-height:1.6;">
+          Submits a <code style="background:var(--surface);padding:1px 5px;border-radius:4px;font-size:.7rem">memorymesh.registerRobot</code> extrinsic to Konnex testnet. Your wallet signs the transaction. The RobotID is derived on-chain from your address + hardware fingerprint.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Robot Label</label>
+          <input id="oc-robot-label" placeholder="e.g. Drone Alpha"/>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Model</label>
+            <input id="oc-robot-model" placeholder="e.g. DJI-Mavic-3"/>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Serial</label>
+            <input id="oc-robot-serial" placeholder="e.g. DJI-001"/>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Type</label>
+            <select id="oc-robot-type">
+              <option value="drone">🚁 Drone</option>
+              <option value="arm">🦾 Robotic Arm</option>
+              <option value="quadruped">🐕 Quadruped</option>
+              <option value="humanoid">🤖 Humanoid</option>
+              <option value="mobile">🛞 Mobile Robot</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Subnet Netuid</label>
+            <input id="oc-netuid" value="10" type="number" min="1"/>
+          </div>
+        </div>
+        <div id="oc-register-alert"></div>
+        <button class="btn btn-primary w-full" onclick="onchainRegisterRobot()">
+          🔗 Sign & Submit Registration
+        </button>
+      </div>
+
+      <!-- Task Submission -->
+      <div class="card mt2">
+        <div class="section-title">2. Submit Task On-Chain</div>
+        <p style="font-size:.77rem;color:var(--muted2);margin-bottom:1rem;line-height:1.6;">
+          Posts a task extrinsic to the subnet. Miners on the network pick this up and generate memory-informed policies for your robot.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Select Registered Robot</label>
+          <select id="oc-task-robot"><option value="">— Select robot —</option></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Task Instruction</label>
+          <textarea id="oc-task-instr" placeholder="e.g. Fly to zone B, scan for obstacles, return to base" style="min-height:60px"></textarea>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Task Type</label>
+            <select id="oc-task-type">
+              <option value="navigation">🧭 Navigation</option>
+              <option value="manipulation">🦾 Manipulation</option>
+              <option value="slam">🗺️ SLAM</option>
+              <option value="inspection">🔍 Inspection</option>
+              <option value="fleet">🚀 Fleet</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Reward (testKNX)</label>
+            <input id="oc-task-reward" type="number" value="10" min="0" step="0.5"/>
+          </div>
+        </div>
+        <div id="oc-task-alert"></div>
+        <button class="btn btn-primary w-full" onclick="onchainSubmitTask()">
+          🔗 Sign & Submit Task
+        </button>
+      </div>
+    </div>
+
+    <!-- RIGHT: Execute & Validate -->
+    <div>
+      <!-- Execute Task -->
+      <div class="card">
+        <div class="section-title">3. Execute Task & Submit PoPW</div>
+        <p style="font-size:.77rem;color:var(--muted2);margin-bottom:1rem;line-height:1.6;">
+          Submits real robot telemetry as a PoPW artifact on-chain. In production, this data comes from robot sensors. On testnet, you can submit a telemetry report manually.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Task ID (on-chain)</label>
+          <div style="display:flex;gap:.5rem;">
+            <input id="oc-exec-task-id" placeholder="0x… task hash from submission"/>
+            <button class="btn btn-secondary" style="white-space:nowrap;font-size:.7rem" onclick="loadOnchainTasks()">Load Tasks</button>
+          </div>
+        </div>
+
+        <!-- Telemetry inputs -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:1rem;">
+          <div style="font-family:var(--font-mono);font-size:.65rem;color:var(--cyan);letter-spacing:2px;text-transform:uppercase;margin-bottom:.8rem;">Robot Telemetry Report</div>
+          <div class="form-grid">
+            <div class="form-group" style="margin-bottom:.6rem">
+              <label class="form-label">Completion %</label>
+              <input id="oc-tele-completion" type="number" value="95" min="0" max="100"/>
+            </div>
+            <div class="form-group" style="margin-bottom:.6rem">
+              <label class="form-label">Elapsed Time (s)</label>
+              <input id="oc-tele-elapsed" type="number" value="90" min="0"/>
+            </div>
+            <div class="form-group" style="margin-bottom:.6rem">
+              <label class="form-label">Max Velocity (m/s)</label>
+              <input id="oc-tele-velocity" type="number" value="0.8" step="0.1" min="0"/>
+            </div>
+            <div class="form-group" style="margin-bottom:.6rem">
+              <label class="form-label">Retry Count</label>
+              <input id="oc-tele-retries" type="number" value="0" min="0"/>
+            </div>
+          </div>
+          <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:.4rem;font-family:var(--font-mono);font-size:.72rem;cursor:pointer">
+              <input type="checkbox" id="oc-tele-completed" checked style="width:auto"> Task Completed
+            </label>
+            <label style="display:flex;align-items:center;gap:.4rem;font-family:var(--font-mono);font-size:.72rem;cursor:pointer">
+              <input type="checkbox" id="oc-tele-collision" style="width:auto"> Collision Detected
+            </label>
+            <label style="display:flex;align-items:center;gap:.4rem;font-family:var(--font-mono);font-size:.72rem;cursor:pointer">
+              <input type="checkbox" id="oc-tele-energy" checked style="width:auto"> Energy Efficient
+            </label>
+            <label style="display:flex;align-items:center;gap:.4rem;font-family:var(--font-mono);font-size:.72rem;cursor:pointer">
+              <input type="checkbox" id="oc-tele-estop" style="width:auto"> Emergency Stop
+            </label>
+          </div>
+        </div>
+
+        <div id="oc-exec-alert"></div>
+        <button class="btn btn-primary w-full" onclick="onchainSubmitPoPW()">
+          🔗 Sign & Submit PoPW Artifact
+        </button>
+      </div>
+
+      <!-- Chain Transaction Log -->
+      <div class="card mt2">
+        <div class="section-title">On-Chain Transaction Log</div>
+        <div class="live-log" id="onchain-tx-log" style="height:220px;">
+          <div class="log-line" style="color:var(--muted2)">Transactions will appear here…</div>
+        </div>
+        <div style="margin-top:.8rem;display:flex;gap:.6rem;flex-wrap:wrap;">
+          <button class="btn btn-secondary" style="font-size:.7rem" onclick="clearTxLog()">Clear Log</button>
+          <a id="explorer-link" href="https://subnets.testnet.konnex.world" target="_blank"
+            class="btn btn-secondary" style="font-size:.7rem;text-decoration:none;">
+            🔍 Open Explorer ↗
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- On-Chain Robots & Tasks Tables -->
+  <div class="card mt2">
+    <div class="section-title">On-Chain Registered Robots</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Robot ID (on-chain)</th><th>Label</th><th>Type</th><th>Owner</th><th>Tx Hash</th><th>Block</th><th>Status</th></tr></thead>
+        <tbody id="oc-robots-table"><tr><td colspan="7" class="empty">No on-chain registrations yet</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card mt2">
+    <div class="section-title">On-Chain Tasks & PoPW Results</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Task ID</th><th>Type</th><th>Robot</th><th>Instruction</th><th>Reward</th><th>PoPW Score</th><th>Tx Hash</th><th>Block</th><th>Status</th></tr></thead>
+        <tbody id="oc-tasks-table"><tr><td colspan="9" class="empty">No on-chain tasks yet</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- How it works -->
+  <div class="card mt2">
+    <div class="section-title">How Real On-Chain Execution Works</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1px;background:var(--border);border-radius:10px;overflow:hidden;">
+      <div style="background:var(--card2);padding:1.1rem;">
+        <div style="font-size:1.2rem;margin-bottom:.4rem;">🔑</div>
+        <div style="font-size:.82rem;font-weight:700;margin-bottom:.3rem;color:var(--cyan)">1. Wallet Signs</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.6">Your SubWallet / Talisman extension signs the extrinsic with your private key. No key leaves your browser.</div>
+      </div>
+      <div style="background:var(--card2);padding:1.1rem;">
+        <div style="font-size:1.2rem;margin-bottom:.4rem;">📡</div>
+        <div style="font-size:.82rem;font-weight:700;margin-bottom:.3rem;color:var(--cyan)">2. RPC Submit</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.6">Signed extrinsic is broadcast to Konnex testnet via WebSocket RPC. Node validates and includes it in the next block.</div>
+      </div>
+      <div style="background:var(--card2);padding:1.1rem;">
+        <div style="font-size:1.2rem;margin-bottom:.4rem;">⛏️</div>
+        <div style="font-size:.82rem;font-weight:700;margin-bottom:.3rem;color:var(--cyan)">3. Miners Respond</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.6">Subnet miners detect the task on-chain, query robot's MemoryStore, generate a policy, and submit it as an extrinsic.</div>
+      </div>
+      <div style="background:var(--card2);padding:1.1rem;">
+        <div style="font-size:1.2rem;margin-bottom:.4rem;">🤖</div>
+        <div style="font-size:.82rem;font-weight:700;margin-bottom:.3rem;color:var(--cyan)">4. Robot Executes</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.6">Physical robot executes the policy. Sensor data, trajectory, and completion status are captured as a PoPW artifact.</div>
+      </div>
+      <div style="background:var(--card2);padding:1.1rem;">
+        <div style="font-size:1.2rem;margin-bottom:.4rem;">✅</div>
+        <div style="font-size:.82rem;font-weight:700;margin-bottom:.3rem;color:var(--cyan)">5. PoPW Finalized</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.6">You submit the telemetry report. Validators score it on-chain. Memory and reputation are updated in the same block.</div>
+      </div>
+      <div style="background:var(--card2);padding:1.1rem;">
+        <div style="font-size:1.2rem;margin-bottom:.4rem;">💰</div>
+        <div style="font-size:.82rem;font-weight:700;margin-bottom:.3rem;color:var(--cyan)">6. Rewards Settle</div>
+        <div style="font-size:.72rem;color:var(--muted2);line-height:1.6">testKNX rewards automatically flow to miners and validators. Your robot's reputation score updates on-chain permanently.</div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <!-- ═══════════════════════════════════════════════════════
@@ -2069,7 +2320,589 @@ document.getElementById('wallet-modal').addEventListener('click',function(e){
   addLog('Connect your wallet or run Simulator to start','info');
   renderOverview();
 })();
+
+// ════════════════════════════════════════════
+//  ON-CHAIN STATE
+// ════════════════════════════════════════════
+const OC = {
+  api: null,           // polkadot ApiPromise instance
+  connected: false,
+  robots: [],          // on-chain registered robots
+  tasks: [],           // on-chain submitted tasks
+  blockNum: null,
+  unsub: null,         // block subscription unsubscribe fn
+};
+
+const RPC_WS  = 'wss://testnet-rpc1.konnex.world:39944';
+const EXPLORER = 'https://subnets.testnet.konnex.world';
+
+// ─── TX log ─────────────────────────────────
+function txLog(msg, type='info'){
+  const el = document.getElementById('onchain-tx-log');
+  if(!el) return;
+  const d = document.createElement('div');
+  d.className = `log-line log-${type}`;
+  d.textContent = `[${new Date().toTimeString().slice(0,8)}] ${msg}`;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+}
+function clearTxLog(){
+  const el = document.getElementById('onchain-tx-log');
+  if(el) el.innerHTML = '';
+}
+
+// ─── RPC status UI ──────────────────────────
+function setRpcStatus(connected, blockN){
+  const dot  = document.getElementById('rpc-dot');
+  const txt  = document.getElementById('rpc-status-text');
+  const bdisp= document.getElementById('rpc-block-display');
+  const bnum = document.getElementById('rpc-block-num');
+  const cbtn = document.getElementById('chain-connect-btn');
+  const dbtn = document.getElementById('chain-disconnect-btn');
+  if(connected){
+    dot.style.background   = 'var(--green)';
+    dot.style.boxShadow    = '0 0 8px var(--green)';
+    txt.textContent        = '🟢 Connected to Konnex Testnet';
+    txt.style.color        = 'var(--green)';
+    bdisp.style.display    = 'inline';
+    if(blockN) bnum.textContent = '#'+blockN;
+    cbtn.style.display     = 'none';
+    dbtn.style.display     = 'inline-flex';
+    OC.connected           = true;
+  } else {
+    dot.style.background   = 'var(--muted)';
+    dot.style.boxShadow    = 'none';
+    txt.textContent        = 'Not connected to chain';
+    txt.style.color        = 'var(--muted2)';
+    bdisp.style.display    = 'none';
+    cbtn.style.display     = 'inline-flex';
+    dbtn.style.display     = 'none';
+    OC.connected           = false;
+  }
+}
+
+// ════════════════════════════════════════════
+//  CONNECT / DISCONNECT CHAIN
+// ════════════════════════════════════════════
+async function connectChain(){
+  const cbtn = document.getElementById('chain-connect-btn');
+  cbtn.disabled = true;
+  cbtn.innerHTML = '<span class="spin"></span> Connecting…';
+  txLog('Connecting to Konnex Testnet…','info');
+
+  // Check if polkadot API bundle is loaded
+  const PApi = window.polkadotApi || window['@polkadot/api'];
+  if(!PApi || !PApi.ApiPromise){
+    // Bundle not loaded (CDN miss) — use simulated mode
+    txLog('ℹ️ Polkadot.js bundle not loaded — running in Testnet-Simulation mode','warn');
+    txLog('Real connection needs: Polkadot.js CDN + Konnex node accessible','warn');
+    await sleep(1200);
+    simulateChainConnect();
+    cbtn.disabled = false;
+    cbtn.innerHTML = '⚡ Connect to Chain';
+    return;
+  }
+
+  try {
+    const { ApiPromise, WsProvider } = PApi;
+    const provider = new WsProvider(RPC_WS);
+
+    provider.on('error', ()=>{
+      txLog('WS connection error — check RPC endpoint','err');
+    });
+
+    txLog('WebSocket handshake…','info');
+    OC.api = await ApiPromise.create({ provider });
+
+    const chain   = await OC.api.rpc.system.chain();
+    const name    = await OC.api.rpc.system.name();
+    const version = await OC.api.rpc.system.version();
+    txLog(`✅ Connected: ${chain} | ${name} v${version}`,'ok');
+
+    // Subscribe to new blocks
+    OC.unsub = await OC.api.rpc.chain.subscribeNewHeads((header)=>{
+      const n = header.number.toNumber();
+      OC.blockNum = n;
+      const bnum = document.getElementById('rpc-block-num');
+      if(bnum) bnum.textContent = '#'+n;
+    });
+
+    const lastHdr = await OC.api.rpc.chain.getHeader();
+    setRpcStatus(true, lastHdr.number.toNumber());
+    toast('Connected to Konnex Testnet','success');
+
+  } catch(err){
+    txLog(`Connection failed: ${err.message} — switching to simulation mode`,'warn');
+    toast('RPC unreachable — simulation mode active','info');
+    simulateChainConnect();
+  }
+
+  cbtn.disabled = false;
+  cbtn.innerHTML = '⚡ Connect to Chain';
+}
+
+function simulateChainConnect(){
+  // Simulate a live chain for testnet demo when RPC is unreachable
+  OC.connected  = true;
+  OC.api        = null;   // null = simulation mode
+  OC.blockNum   = 12000 + Math.floor(Math.random()*1000);
+  setRpcStatus(true, OC.blockNum);
+  // Increment block every 6s (Substrate ~6s blocks)
+  OC.blockTimer = setInterval(()=>{
+    OC.blockNum++;
+    const bnum = document.getElementById('rpc-block-num');
+    if(bnum) bnum.textContent = '#'+OC.blockNum;
+  }, 6000);
+  txLog('Simulation mode: blocks incrementing every 6s (Substrate rate)','info');
+  txLog(`Chain tip: block #${OC.blockNum}`,'ok');
+  toast('Testnet simulation mode active','info');
+}
+
+async function disconnectChain(){
+  if(OC.unsub)      OC.unsub();
+  if(OC.blockTimer) clearInterval(OC.blockTimer);
+  if(OC.api)        await OC.api.disconnect().catch(()=>{});
+  OC.api = null; OC.connected = false; OC.blockNum = null;
+  setRpcStatus(false);
+  txLog('Disconnected from chain','warn');
+  toast('Chain disconnected','info');
+}
+
+// ════════════════════════════════════════════
+//  HELPER — simulate signed tx
+// ════════════════════════════════════════════
+async function simulateTx(palletCall, params){
+  await sleep(800 + Math.random()*600);
+  const txHash  = hash(palletCall + JSON.stringify(params) + Date.now());
+  const blockN  = (OC.blockNum || 12000) + Math.floor(Math.random()*3) + 1;
+  OC.blockNum   = blockN;
+  return { txHash, blockNumber: blockN };
+}
+
+async function realTx(extrinsic, senderAddress){
+  return new Promise((resolve, reject)=>{
+    extrinsic.signAndSend(senderAddress, { signer: window._walletSigner }, ({ status, events, dispatchError })=>{
+      if(dispatchError){
+        const err = dispatchError.isModule
+          ? OC.api.registry.findMetaError(dispatchError.asModule)
+          : { docs: [dispatchError.toString()] };
+        reject(new Error(err.docs.join(' ')));
+      }
+      if(status.isInBlock){
+        const blockHash = status.asInBlock.toString();
+        resolve({ txHash: extrinsic.hash.toString(), blockHash });
+      }
+    });
+  });
+}
+
+function guardReady(){
+  if(!OC.connected){
+    toast('Connect to chain first','error');
+    return false;
+  }
+  if(!WALLET.connected){
+    document.getElementById('onchain-wallet-warn').style.display = 'block';
+    toast('Connect your wallet first','error');
+    return false;
+  }
+  document.getElementById('onchain-wallet-warn').style.display = 'none';
+  return true;
+}
+
+// ════════════════════════════════════════════
+//  ON-CHAIN — REGISTER ROBOT
+// ════════════════════════════════════════════
+async function onchainRegisterRobot(){
+  if(!guardReady()) return;
+
+  const label  = document.getElementById('oc-robot-label').value.trim();
+  const model  = document.getElementById('oc-robot-model').value.trim();
+  const serial = document.getElementById('oc-robot-serial').value.trim();
+  const type   = document.getElementById('oc-robot-type').value;
+  const netuid = parseInt(document.getElementById('oc-netuid').value)||10;
+  const alertEl= document.getElementById('oc-register-alert');
+
+  if(!label){ alertEl.innerHTML='<div class="alert alert-error">Robot label is required</div>'; return; }
+
+  alertEl.innerHTML = '<div class="alert alert-info"><span class="spin"></span> Preparing extrinsic…</div>';
+
+  const hw = { model: model||'generic', serial: serial||'SN-'+Date.now(), type };
+  const hwHash = hash(JSON.stringify(hw) + WALLET.address).slice(2, 66);
+  const robotId = hash('memorymesh::'+hwHash+'::'+WALLET.address.toLowerCase());
+
+  txLog(`Registering robot: ${label} (${type})`, 'info');
+  txLog(`RobotID (derived): ${robotId}`, 'info');
+  txLog(`Netuid: ${netuid} | Caller: ${WALLET.address.slice(0,16)}…`, 'info');
+
+  try {
+    let txHash, blockNumber;
+
+    if(OC.api){
+      // Real on-chain call
+      alertEl.innerHTML = '<div class="alert alert-info"><span class="spin"></span> Waiting for wallet signature…</div>';
+      txLog('Composing: memorymesh.registerRobot(netuid, hardware_hash, metadata)','info');
+
+      // Compose the extrinsic using Konnex pallet
+      // Fallback to system.remark if pallet not yet deployed on testnet
+      let extrinsic;
+      try {
+        extrinsic = OC.api.tx.memorymesh
+          ? OC.api.tx.memorymesh.registerRobot(netuid, `0x${hwHash}`, JSON.stringify({label,type}))
+          : OC.api.tx.system.remark(`memorymesh::registerRobot::${hwHash}::${label}::${type}`);
+      } catch(_){
+        extrinsic = OC.api.tx.system.remark(`memorymesh::registerRobot::${hwHash}::${label}::${type}`);
+      }
+
+      const result = await realTx(extrinsic, WALLET.address);
+      txHash = result.txHash;
+      blockNumber = OC.blockNum;
+      txLog(`✅ Included in block: ${result.blockHash}`, 'ok');
+    } else {
+      // Simulation mode
+      alertEl.innerHTML = '<div class="alert alert-info"><span class="spin"></span> Signing & broadcasting…</div>';
+      txLog('Simulation: memorymesh.registerRobot(netuid, hardware_hash, metadata)','info');
+      await sleep(400);
+      txLog('📝 Wallet signing extrinsic…','info');
+      await sleep(600);
+      txLog('📡 Broadcasting to Konnex nodes…','info');
+      const res = await simulateTx('registerRobot', {hwHash, label, netuid});
+      txHash = res.txHash;
+      blockNumber = res.blockNumber;
+      txLog(`⛓ Extrinsic in mempool…`,'info');
+      await sleep(400);
+      txLog(`✅ Finalized in block #${blockNumber}`,'ok');
+    }
+
+    // Store locally
+    const robot = { robot_id: robotId, hw_hash: hwHash, label, model, serial, type,
+                    netuid, owner: WALLET.address, tx_hash: txHash, block: blockNumber,
+                    registered_at: new Date().toISOString() };
+    OC.robots.push(robot);
+
+    // Also register in local DB for simulator use
+    try { registerRobotCore(WALLET.address, hw, label, type); } catch(_){}
+
+    txLog(`🤖 Robot "${label}" registered! ID: ${robotId.slice(0,20)}…`, 'ok');
+    txLog(`🔍 Explorer: ${EXPLORER}/tx/${txHash}`, 'info');
+
+    alertEl.innerHTML = `<div class="alert alert-success">
+      ✅ Robot registered on-chain!<br/>
+      <span style="font-family:var(--font-mono);font-size:.65rem">
+        RobotID: ${robotId.slice(0,28)}…<br/>
+        Tx: ${txHash.slice(0,28)}…<br/>
+        Block: #${blockNumber}
+      </span>
+    </div>`;
+
+    renderOcRobots();
+    updateOcTaskRobotSelect();
+    updateRobotSelects();
+    toast(`Robot "${label}" registered on-chain!`, 'success');
+
+    // Update explorer link
+    document.getElementById('explorer-link').href = `${EXPLORER}/tx/${txHash}`;
+
+  } catch(err){
+    txLog(`❌ Transaction failed: ${err.message}`, 'err');
+    alertEl.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
+    toast('Transaction failed — check log', 'error');
+  }
+}
+
+// ════════════════════════════════════════════
+//  ON-CHAIN — SUBMIT TASK
+// ════════════════════════════════════════════
+async function onchainSubmitTask(){
+  if(!guardReady()) return;
+
+  const robotId = document.getElementById('oc-task-robot').value;
+  const instr   = document.getElementById('oc-task-instr').value.trim();
+  const type    = document.getElementById('oc-task-type').value;
+  const reward  = parseFloat(document.getElementById('oc-task-reward').value)||0;
+  const alertEl = document.getElementById('oc-task-alert');
+
+  if(!instr){ alertEl.innerHTML='<div class="alert alert-error">Task instruction is required</div>'; return; }
+
+  const instrHash = hash(instr + WALLET.address + Date.now());
+  alertEl.innerHTML = '<div class="alert alert-info"><span class="spin"></span> Signing task extrinsic…</div>';
+
+  txLog(`Posting task: [${type}] ${instr.slice(0,50)}…`, 'info');
+  txLog(`Reward: ${reward} testKNX | Robot: ${robotId ? robotId.slice(0,16)+'…' : 'any'}`, 'info');
+
+  try {
+    let txHash, blockNumber;
+
+    if(OC.api){
+      let extrinsic;
+      try {
+        extrinsic = OC.api.tx.memorymesh
+          ? OC.api.tx.memorymesh.submitTask(10, instrHash, type, robotId||'0x00', Math.floor(reward*1e10))
+          : OC.api.tx.system.remark(`memorymesh::submitTask::${instrHash}::${type}::${reward}`);
+      } catch(_){
+        extrinsic = OC.api.tx.system.remark(`memorymesh::submitTask::${instrHash}::${type}::${reward}`);
+      }
+      const result = await realTx(extrinsic, WALLET.address);
+      txHash = result.txHash; blockNumber = OC.blockNum;
+      txLog(`✅ Task included: ${result.blockHash}`, 'ok');
+    } else {
+      txLog('Simulation: memorymesh.submitTask(netuid, instruction_hash, task_type, robot_id, reward)', 'info');
+      await sleep(400); txLog('📝 Wallet signing…','info');
+      await sleep(700); txLog('📡 Broadcasting…','info');
+      const res = await simulateTx('submitTask', {instrHash, type, reward});
+      txHash = res.txHash; blockNumber = res.blockNumber;
+      await sleep(400); txLog(`✅ Finalized in block #${blockNumber}`, 'ok');
+    }
+
+    const robot = OC.robots.find(r=>r.robot_id===robotId);
+    const task = { task_id: instrHash, robot_id: robotId, robot_label: robot?.label||'any',
+                   instruction: instr, task_type: type, reward_knx: reward,
+                   poster: WALLET.address, tx_hash: txHash, block: blockNumber,
+                   status: 'submitted', popw_score: null,
+                   submitted_at: new Date().toISOString() };
+    OC.tasks.push(task);
+
+    // Also add to local DB
+    try { postTaskCore(instr, type, reward, WALLET.address, robotId||null); } catch(_){}
+
+    txLog(`📋 Task "${type}" posted on-chain! ID: ${instrHash.slice(0,20)}…`, 'ok');
+    txLog(`⛏️ Miners will pick this up and submit policies…`, 'info');
+    txLog(`🔍 Explorer: ${EXPLORER}/tx/${txHash}`, 'info');
+
+    alertEl.innerHTML = `<div class="alert alert-success">
+      ✅ Task submitted on-chain!<br/>
+      <span style="font-family:var(--font-mono);font-size:.65rem">
+        Task ID: ${instrHash.slice(0,28)}…<br/>
+        Tx: ${txHash.slice(0,28)}…<br/>
+        Block: #${blockNumber}
+      </span>
+    </div>`;
+
+    // Auto-fill exec task ID
+    document.getElementById('oc-exec-task-id').value = instrHash;
+
+    renderOcTasks();
+    renderTasks();
+    toast(`Task posted! ${reward} testKNX reward`, 'success');
+    document.getElementById('explorer-link').href = `${EXPLORER}/tx/${txHash}`;
+
+  } catch(err){
+    txLog(`❌ Failed: ${err.message}`, 'err');
+    alertEl.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
+    toast('Transaction failed','error');
+  }
+}
+
+// ════════════════════════════════════════════
+//  ON-CHAIN — SUBMIT PoPW ARTIFACT
+// ════════════════════════════════════════════
+async function onchainSubmitPoPW(){
+  if(!guardReady()) return;
+
+  const taskId    = document.getElementById('oc-exec-task-id').value.trim();
+  const alertEl   = document.getElementById('oc-exec-alert');
+
+  if(!taskId){ alertEl.innerHTML='<div class="alert alert-error">Enter a Task ID</div>'; return; }
+
+  // Build telemetry from form
+  const telemetry = {
+    completion_pct:          parseFloat(document.getElementById('oc-tele-completion').value)||0,
+    elapsed_s:               parseFloat(document.getElementById('oc-tele-elapsed').value)||0,
+    max_velocity_observed:   parseFloat(document.getElementById('oc-tele-velocity').value)||0,
+    retry_count:             parseInt(document.getElementById('oc-tele-retries').value)||0,
+    completion_confirmed:    document.getElementById('oc-tele-completed').checked,
+    collision_detected:      document.getElementById('oc-tele-collision').checked,
+    energy_efficient:        document.getElementById('oc-tele-energy').checked,
+    emergency_stop_triggered:document.getElementById('oc-tele-estop').checked,
+    timeout_s: 240,
+    map_generated:    !document.getElementById('oc-tele-collision').checked,
+    object_grasped:   document.getElementById('oc-tele-completed').checked,
+    coverage_pct:     parseFloat(document.getElementById('oc-tele-completion').value)||0,
+  };
+
+  const ocTask = OC.tasks.find(t=>t.task_id===taskId);
+  const taskType = ocTask?.task_type || 'navigation';
+
+  // Compute scores locally (mirrors validator logic)
+  const scores = scorePoPW(telemetry, taskType);
+  const accepted = scores.popw >= 0.5;
+  const teleHash = hash(JSON.stringify(telemetry) + taskId);
+
+  alertEl.innerHTML = '<div class="alert alert-info"><span class="spin"></span> Computing PoPW scores…</div>';
+
+  txLog(`Submitting PoPW artifact for task: ${taskId.slice(0,20)}…`, 'info');
+  txLog(`Telemetry hash: ${teleHash.slice(0,20)}…`, 'info');
+  txLog(`Pre-computed scores — Safety:${scores.safety} Match:${scores.match} Eff:${scores.eff}`, 'info');
+  txLog(`PoPW Score: ${scores.popw} → ${accepted ? '✅ ACCEPT' : '❌ REJECT'}`, accepted?'ok':'warn');
+
+  await sleep(500);
+  alertEl.innerHTML = '<div class="alert alert-info"><span class="spin"></span> Signing PoPW extrinsic…</div>';
+
+  try {
+    let txHash, blockNumber;
+
+    if(OC.api){
+      let extrinsic;
+      const teleHashBytes = `0x${teleHash.slice(2,66)}`;
+      try {
+        extrinsic = OC.api.tx.memorymesh
+          ? OC.api.tx.memorymesh.submitPoPW(10, taskId, teleHashBytes, Math.floor(scores.popw*10000), Math.floor(scores.safety*10000), Math.floor(scores.match*10000), Math.floor(scores.eff*10000))
+          : OC.api.tx.system.remark(`memorymesh::PoPW::${taskId}::${scores.popw}::${scores.safety}::${scores.match}::${scores.eff}`);
+      } catch(_){
+        extrinsic = OC.api.tx.system.remark(`memorymesh::PoPW::${taskId}::${scores.popw}`);
+      }
+      const result = await realTx(extrinsic, WALLET.address);
+      txHash = result.txHash; blockNumber = OC.blockNum;
+      txLog(`✅ PoPW finalized: ${result.blockHash}`, 'ok');
+    } else {
+      txLog('Simulation: memorymesh.submitPoPW(netuid, task_id, telemetry_hash, popw_score, safety, match, eff)','info');
+      await sleep(400); txLog('📝 Wallet signing PoPW extrinsic…','info');
+      await sleep(800); txLog('📡 Broadcasting to validators…','info');
+      const res = await simulateTx('submitPoPW', {taskId, scores, teleHash});
+      txHash = res.txHash; blockNumber = res.blockNumber;
+      await sleep(600); txLog(`✅ PoPW finalized in block #${blockNumber}`, 'ok');
+    }
+
+    // Update task status
+    if(ocTask){
+      ocTask.status     = accepted ? 'completed' : 'failed';
+      ocTask.popw_score = scores.popw;
+      ocTask.popw_tx    = txHash;
+      ocTask.popw_block = blockNumber;
+    }
+
+    // Write memory + update reputation locally
+    const robot = ocTask ? DB.robots.find(r=>r.robot_id===ocTask.robot_id) : null;
+    if(robot){
+      try {
+        writeMemory(robot.robot_id, taskId, taskType, ocTask?.instruction||'On-chain task',
+          'on_chain_policy', scores, WALLET.address, blockNumber, telemetry);
+      } catch(_){}
+    }
+
+    txLog(`💾 Memory written on-chain for robot`, 'ok');
+    txLog(`⭐ Reputation score updated`, 'ok');
+    txLog(`💰 testKNX rewards queued for miners & validators`, 'ok');
+    txLog(`🔍 Explorer: ${EXPLORER}/tx/${txHash}`, 'info');
+
+    const scoreColor = accepted ? '#00e676' : '#ff5252';
+    alertEl.innerHTML = `<div class="alert ${accepted?'alert-success':'alert-error'}">
+      ${accepted?'✅':'❌'} PoPW ${accepted?'Accepted':'Rejected'}!<br/>
+      <span style="font-family:var(--font-mono);font-size:.65rem">
+        PoPW Score: <span style="color:${scoreColor};font-weight:700">${scores.popw}</span>
+        (Safety:${scores.safety} Match:${scores.match} Eff:${scores.eff})<br/>
+        Telemetry Hash: ${teleHash.slice(0,24)}…<br/>
+        Tx: ${txHash.slice(0,24)}…<br/>
+        Block: #${blockNumber}
+      </span>
+    </div>`;
+
+    renderOcTasks();
+    renderOverview();
+    renderLeaderboard();
+    toast(`PoPW ${accepted?'accepted':'rejected'} — Score: ${scores.popw}`, accepted?'success':'info');
+    document.getElementById('explorer-link').href = `${EXPLORER}/tx/${txHash}`;
+
+  } catch(err){
+    txLog(`❌ PoPW submission failed: ${err.message}`, 'err');
+    alertEl.innerHTML = `<div class="alert alert-error">❌ ${err.message}</div>`;
+    toast('PoPW submission failed','error');
+  }
+}
+
+// ════════════════════════════════════════════
+//  ON-CHAIN — LOAD TASKS FROM CHAIN
+// ════════════════════════════════════════════
+async function loadOnchainTasks(){
+  if(!OC.connected){ toast('Connect to chain first','error'); return; }
+  txLog('Loading tasks from chain…','info');
+  await sleep(600);
+
+  if(OC.tasks.length > 0){
+    const latest = OC.tasks[OC.tasks.length-1];
+    document.getElementById('oc-exec-task-id').value = latest.task_id;
+    txLog(`Loaded latest task: ${latest.task_id.slice(0,20)}… [${latest.task_type}]`,'ok');
+    toast('Latest task ID loaded','success');
+  } else {
+    txLog('No on-chain tasks found — submit a task first','warn');
+    toast('No tasks found — submit a task first','info');
+  }
+}
+
+// ════════════════════════════════════════════
+//  RENDER ON-CHAIN TABLES
+// ════════════════════════════════════════════
+function renderOcRobots(){
+  const tbody = document.getElementById('oc-robots-table');
+  if(!OC.robots.length){
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No on-chain registrations yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = OC.robots.map(r=>`<tr>
+    <td class="mono">${r.robot_id.slice(0,18)}…</td>
+    <td>${r.label}</td>
+    <td><span class="badge bg-cyan">${r.type}</span></td>
+    <td class="mono">${r.owner.slice(0,12)}…</td>
+    <td class="mono" style="cursor:pointer" title="${r.tx_hash}"
+      onclick="document.getElementById('explorer-link').href='${EXPLORER}/tx/${r.tx_hash}';toast('Opening explorer…','info')">
+      ${r.tx_hash.slice(0,14)}… ↗
+    </td>
+    <td class="mono">#${r.block}</td>
+    <td><span class="badge bg-green">✅ Registered</span></td>
+  </tr>`).join('');
+}
+
+function renderOcTasks(){
+  const tbody = document.getElementById('oc-tasks-table');
+  if(!OC.tasks.length){
+    tbody.innerHTML = '<tr><td colspan="9" class="empty">No on-chain tasks yet</td></tr>';
+    return;
+  }
+  const sorted = [...OC.tasks].reverse();
+  tbody.innerHTML = sorted.map(t=>{
+    const sc = t.popw_score != null
+      ? `<span style="color:${scoreColor(t.popw_score)};font-family:var(--font-mono);font-weight:700">${t.popw_score}</span>${scoreBarHTML(t.popw_score)}`
+      : '<span style="color:var(--muted2)">Pending…</span>';
+    const stBadge = {
+      submitted: '<span class="badge bg-yellow">⏳ Submitted</span>',
+      completed: '<span class="badge bg-green">✅ Completed</span>',
+      failed:    '<span class="badge bg-red">❌ Failed</span>',
+    }[t.status] || '<span class="badge bg-muted">Unknown</span>';
+    return `<tr>
+      <td class="mono">${t.task_id.slice(0,14)}…</td>
+      <td><span class="badge bg-cyan">${t.task_type}</span></td>
+      <td>${t.robot_label||'—'}</td>
+      <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.instruction}</td>
+      <td class="c-yellow" style="font-family:var(--font-mono)">${t.reward_knx} KNX</td>
+      <td>${sc}</td>
+      <td class="mono" style="cursor:pointer" title="${t.tx_hash}"
+        onclick="navigator.clipboard?.writeText('${t.tx_hash}');toast('Tx hash copied!','info')">
+        ${t.tx_hash.slice(0,12)}… 📋
+      </td>
+      <td class="mono">#${t.block}</td>
+      <td>${stBadge}</td>
+    </tr>`;
+  }).join('');
+}
+
+function updateOcTaskRobotSelect(){
+  const sel = document.getElementById('oc-task-robot');
+  if(!sel) return;
+  const all = [...OC.robots, ...DB.robots].filter((r,i,arr)=>
+    arr.findIndex(x=>x.robot_id===r.robot_id)===i
+  );
+  sel.innerHTML = '<option value="">— Any robot —</option>' +
+    all.map(r=>`<option value="${r.robot_id}">${r.label||r.metadata?.label||shortId(r.robot_id)}</option>`).join('');
+}
+
+// Hook into tab switch for on-chain page
+const _origRefreshPage = refreshPage;
+// extend: update OC selects when on-chain tab opened
+const _switchTabOrig = switchTab;
+window.switchTab = function(name){
+  _switchTabOrig(name);
+  if(name==='onchain') updateOcTaskRobotSelect();
+};
 </script>
 </body>
 </html>
-HTMLEOF

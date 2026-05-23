@@ -980,7 +980,7 @@ function buildRemarkCall(remarkStr, useRemarkWithEvent=true){
 // Main: sign + build + submit a remark extrinsic
 // Shows proper TRANSACTION popup in wallet (with fee estimate, not just raw sign)
 async function sendSignedRemark(rpc, signer, address, remarkStr){
-  // Step 1: Fetch chain state needed for payload
+  // ── Step 1: Fetch all chain state in parallel
   const [header, genesisHash, rtVersion, nonce] = await Promise.all([
     rpc.call('chain_getHeader',[]),
     rpc.call('chain_getBlockHash',[0]),
@@ -990,62 +990,97 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
 
   const blockNum  = parseInt(header.number, 16);
   const blockHash = await rpc.call('chain_getBlockHash',[blockNum]);
-  const specVersion  = rtVersion.specVersion;
-  const transVersion = rtVersion.transactionVersion;
 
-  // Step 2: Build call bytes
+  // These MUST be plain numbers, not hex strings — Talisman/SubWallet both require this
+  const specVersion  = Number(rtVersion.specVersion);
+  const transVersion = Number(rtVersion.transactionVersion);
+
+  // ── Step 2: Build call bytes — try remarkWithEvent first
   const callBytes = buildRemarkCall(remarkStr, true);
   const callHex   = bytesToHex(callBytes);
 
-  // Step 3: Build signing payload — THIS shows the transaction popup in wallet ✅
+  // ── Step 3: Build signing payload
+  // CRITICAL rules for Talisman + SubWallet compatibility:
+  //   - specVersion, transactionVersion → plain Number (NOT hex string)
+  //   - nonce, tip → '0x'-prefixed hex string OR plain number
+  //   - era → '0x00' = immortal (single byte)
+  //   - signedExtensions → MUST match chain's signed extensions list
+  //   - withSignedTransaction: true → tells wallet to return full signed extrinsic bytes
+  const signedExtensions = rtVersion.signedExtensions || [
+    'CheckNonZeroSender','CheckSpecVersion','CheckTxVersion',
+    'CheckGenesis','CheckMortality','CheckNonce','CheckWeight',
+    'ChargeTransactionPayment','PrevalidateAttests',
+  ];
+
   const signingPayload = {
     address,
     blockHash,
-    blockNumber : '0x'+blockNum.toString(16),
-    era         : '0x00',        // immortal tx
+    blockNumber       : blockNum,           // plain number
+    era               : '0x00',             // immortal
     genesisHash,
-    method      : callHex,
-    nonce       : '0x'+nonce.toString(16),
-    specVersion : '0x'+specVersion.toString(16),
-    tip         : '0x00',
-    transactionVersion: '0x'+transVersion.toString(16),
-    version     : 4,
+    method            : callHex,
+    nonce             : nonce,              // plain number — wallets handle both
+    signedExtensions,
+    specVersion,                            // plain Number ← Talisman fix
+    tip               : 0,                  // plain 0 — not '0x00'
+    transactionVersion: transVersion,       // plain Number ← Talisman fix
+    version           : 4,
+    withSignedTransaction: true,            // SubWallet returns full extrinsic if supported
   };
 
-  // signPayload → wallet shows fee + call details popup ✅
-  const signed = await signer.signPayload(signingPayload);
-  const signature = signed.signature; // 0x + 64-byte hex (sr25519)
-
-  // Step 4: Decode SS58 address to raw 32-byte pubkey
-  let pubkey32;
+  // ── Step 4: signPayload → wallet shows TRANSACTION popup (fee, call, network) ✅
+  addLog('⛓ Wallet popup dikhana…','info');
+  let signed;
   try{
-    pubkey32 = ss58Decode(address);
-  }catch(e){
-    // If address is already 0x hex pubkey
-    pubkey32 = hexToBytes(address).slice(0,32);
+    signed = await signer.signPayload(signingPayload);
+  }catch(payloadErr){
+    // Some wallets throw on unknown fields — strip extras and retry
+    addLog('signPayload retry (stripped)…','warn');
+    const stripped = {
+      address, blockHash, era:'0x00', genesisHash,
+      method:callHex, nonce, specVersion, tip:0,
+      transactionVersion:transVersion, version:4,
+    };
+    signed = await signer.signPayload(stripped);
   }
 
-  // Step 5: Build full SCALE-encoded signed extrinsic
-  // sr25519 signature type = 0x01
+  // ── Step 5: Check if wallet returned full signed extrinsic (withSignedTransaction)
+  if(signed.signedTransaction){
+    addLog('Wallet returned full signed extrinsic — submitting…','info');
+    try{
+      const txHash = await rpc.call('author_submitExtrinsic',[signed.signedTransaction]);
+      return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
+    }catch(e){ addLog('Submit failed: '+e.message+' — falling back to manual build','warn'); }
+  }
+
+  // ── Step 6: Build full extrinsic manually from signature
+  const signature = signed.signature;
+
+  let pubkey32;
+  try{ pubkey32 = ss58Decode(address); }
+  catch(e){ pubkey32 = hexToBytes(address.replace('0x','')).slice(0,32); }
+
   const extrinsicHex = buildFullSignedExtrinsic(pubkey32, signature, 0x01, nonce, '0x00', 0, callBytes);
 
-  // Step 6: Submit to chain
-  addLog('⛓ Broadcasting signed extrinsic…','info');
+  // ── Step 7: Submit — retry with plain system.remark if remarkWithEvent rejected
+  addLog('⛓ Broadcasting…','info');
   let txHash;
   try{
     txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex]);
   }catch(submitErr){
-    // remarkWithEvent might not exist on this chain — retry with plain remark
-    addLog('remarkWithEvent failed, retrying with system.remark…','warn');
+    addLog('remarkWithEvent rejected ('+submitErr.message+') — retrying with system.remark…','warn');
     const callBytes2 = buildRemarkCall(remarkStr, false);
     const callHex2   = bytesToHex(callBytes2);
-    signingPayload.method = callHex2;
-    const signed2 = await signer.signPayload(signingPayload);
-    const extrinsicHex2 = buildFullSignedExtrinsic(pubkey32, signed2.signature, 0x01, nonce, '0x00', 0, callBytes2);
+    // Re-sign with updated method (nonce already used — increment)
+    const signingPayload2 = { ...signingPayload, method:callHex2, nonce:nonce+1 };
+    let signed2;
+    try{ signed2 = await signer.signPayload(signingPayload2); }
+    catch(e){ signed2 = await signer.signPayload({address,blockHash,era:'0x00',genesisHash,method:callHex2,nonce:nonce+1,specVersion,tip:0,transactionVersion:transVersion,version:4}); }
+    const extrinsicHex2 = buildFullSignedExtrinsic(pubkey32, signed2.signature, 0x01, nonce+1, '0x00', 0, callBytes2);
     txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex2]);
   }
 
-  return { txHash: txHash || hash(remarkStr+Date.now()), blockNumber: blockNum, local: false };
+  return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
 }
 
 // Global RPC instance
@@ -1949,18 +1984,26 @@ async function registerRobotUI(){
   const alertEl=document.getElementById('r-alert');
   const btn=document.getElementById('r-btn');
   if(!owner){ alertEl.innerHTML='<div class="alert alert-error">Owner address is required</div>'; return; }
-  btn.disabled=true; btn.innerHTML='<span class="spin"></span> Broadcasting…';
-  alertEl.innerHTML='<div class="alert alert-info"><span class="spin"></span> Submitting registerRobot() to Konnex Testnet…</div>';
+  if(!WALLET.connected || !WALLET.signer || WALLET.readOnly){
+    alertEl.innerHTML='<div class="alert alert-warn">⚠️ Extension wallet connect karo (SubWallet / Talisman) — onchain tx ke liye signer chahiye.<br/><button class="btn btn-primary" style="margin-top:.5rem;font-size:.75rem;" onclick="openWalletModal()">Connect Wallet</button></div>';
+    return;
+  }
+  btn.disabled=true; btn.innerHTML='<span class="spin"></span> Wallet popup ka intezar…';
+  alertEl.innerHTML='<div class="alert alert-info"><span class="spin"></span> Wallet mein transaction approve karo…</div>';
   try{
     const hw=model?{model,serial,type}:null;
     const robot=await registerRobotCore(owner,hw,label||model||'Robot',type);
-    const txInfo=robot.local?'(local state — no wallet connected)':` · Tx: ${explorerTxLink(robot.tx_hash)}`;
-    alertEl.innerHTML=`<div class="alert alert-success">✅ Registered: ${shortId(robot.robot_id)} ${txInfo}</div>`;
+    if(robot.local){
+      alertEl.innerHTML='<div class="alert alert-warn">⚠️ Local state mein save hua — onchain submit nahi hua.<br/>Robot ID: '+shortId(robot.robot_id)+'</div>';
+    } else {
+      alertEl.innerHTML='<div class="alert alert-success">✅ Onchain registered! · Tx: '+explorerTxLink(robot.tx_hash)+'</div>';
+    }
     renderRobots(); updateRobotSelects();
-    addLog(`Robot registered ⛓: ${label||model||'Robot'}`,'ok');
-    toast(`Robot registered: ${label||model||'Robot'}`,'success');
+    addLog('Robot registered: '+(label||model||'Robot')+' '+(robot.local?'[local]':'[⛓ onchain]'),'ok');
+    toast('Robot registered: '+(label||model||'Robot'),'success');
   }catch(e){
-    alertEl.innerHTML=`<div class="alert alert-error">❌ ${e.message}</div>`;
+    alertEl.innerHTML='<div class="alert alert-error">❌ '+e.message+'</div>';
+    addLog('registerRobot error: '+e.message,'err');
   }finally{
     btn.disabled=false; btn.innerHTML='⛓ Register Robot On-Chain';
   }
@@ -1993,17 +2036,25 @@ async function postTaskUI(){
   const alertEl=document.getElementById('t-alert');
   const btn=document.getElementById('t-btn');
   if(!instr||!poster){ alertEl.innerHTML='<div class="alert alert-error">Instruction and poster address are required</div>'; return; }
-  btn.disabled=true; btn.innerHTML='<span class="spin"></span> Broadcasting…';
-  alertEl.innerHTML='<div class="alert alert-info"><span class="spin"></span> Submitting postTask() to Konnex Testnet…</div>';
+  if(!WALLET.connected || !WALLET.signer || WALLET.readOnly){
+    alertEl.innerHTML='<div class="alert alert-warn">⚠️ Extension wallet connect karo (SubWallet / Talisman) — onchain tx ke liye signer chahiye.<br/><button class="btn btn-primary" style="margin-top:.5rem;font-size:.75rem;" onclick="openWalletModal()">Connect Wallet</button></div>';
+    return;
+  }
+  btn.disabled=true; btn.innerHTML='<span class="spin"></span> Wallet popup ka intezar…';
+  alertEl.innerHTML='<div class="alert alert-info"><span class="spin"></span> Wallet mein transaction approve karo…</div>';
   try{
     const task=await postTaskCore(instr,type,reward,poster,robotId);
-    const txInfo=task.local?'(local state)':` · Tx: ${explorerTxLink(task.tx_hash)}`;
-    alertEl.innerHTML=`<div class="alert alert-success">✅ Task posted: ${shortId(task.task_id)} ${txInfo}</div>`;
+    if(task.local){
+      alertEl.innerHTML='<div class="alert alert-warn">⚠️ Local state mein save hua — onchain nahi gaya. RPC check karo.<br/>Task ID: '+shortId(task.task_id)+'</div>';
+    } else {
+      alertEl.innerHTML='<div class="alert alert-success">✅ Task posted onchain! · Tx: '+explorerTxLink(task.tx_hash)+'</div>';
+    }
     renderTasks();
-    addLog(`Task posted ⛓: [${type}] ${instr.slice(0,40)}…`,'info');
-    toast(`Task posted — ${reward} testKNX reward`,'success');
+    addLog('Task posted ['+type+']: '+instr.slice(0,40)+' '+(task.local?'[local]':'[⛓ onchain]'),'info');
+    toast('Task posted — '+reward+' testKNX reward','success');
   }catch(e){
-    alertEl.innerHTML=`<div class="alert alert-error">❌ ${e.message}</div>`;
+    alertEl.innerHTML='<div class="alert alert-error">❌ '+e.message+'</div>';
+    addLog('postTask error: '+e.message,'err');
   }finally{
     btn.disabled=false; btn.innerHTML='⛓ Post Task On-Chain';
   }

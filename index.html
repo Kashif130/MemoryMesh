@@ -10,11 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
 
-<!-- Polkadot API (CDN bundles) -->
-<script src="https://unpkg.com/@polkadot/api@10.11.1/bundle-polkadot-api.js"></script>
-<script src="https://unpkg.com/@polkadot/extension-dapp@0.46.5/bundle-polkadot-extension-dapp.js"></script>
-<script src="https://unpkg.com/@polkadot/util@12.6.2/bundle-polkadot-util.js"></script>
-<script src="https://unpkg.com/@polkadot/util-crypto@12.6.2/bundle-polkadot-util-crypto.js"></script>
+<!-- Chain API loaded dynamically on demand -->
 
 <style>
 /* ═══════════ RESET & ROOT ═══════════ */
@@ -779,49 +775,75 @@ function explorerBlockLink(blk){ return `<a class="tx-link" href="${EXPLORER}/bl
 // ════════════════════════════════════════════
 //  CHAIN CONNECTION
 // ════════════════════════════════════════════
+function loadScript(src){
+  return new Promise((resolve,reject)=>{
+    const existing = document.querySelector('script[data-pjs]');
+    if(existing){ resolve(); return; }
+    const s=document.createElement('script');
+    s.src=src; s.setAttribute('data-pjs','1');
+    s.onload=()=>{ console.log('Loaded:',src); resolve(); };
+    s.onerror=()=>reject(new Error('Failed: '+src));
+    document.head.appendChild(s);
+  });
+}
+
 async function initChain(){
   if(chainConnecting || chainApi) return chainApi;
   chainConnecting = true;
   const statusEl = document.getElementById('chain-status');
   const subnetEl = document.getElementById('subnet-chain-status');
   statusEl.className='chain-status connecting';
-  statusEl.textContent='⟳ Connecting…';
-  addLog('Connecting to Konnex Testnet: '+KONNEX_WS,'info');
+  statusEl.textContent='Connecting...';
+  addLog('Loading Polkadot API bundle...','info');
 
   try{
-    // Check if polkadot api bundle loaded
-    if(typeof polkadotApi === 'undefined' && typeof window.polkadotApi === 'undefined'){
-      throw new Error('Polkadot API bundle not loaded. Check CDN connection.');
+    // Load polkadot/api dynamically if not present
+    if(typeof window.polkadotApi === 'undefined'){
+      try{
+        await loadScript('https://cdn.jsdelivr.net/npm/@polkadot/api@10.11.2/bundle-polkadot-api.js');
+      }catch(e1){
+        addLog('jsDelivr failed, trying unpkg...','warn');
+        await loadScript('https://unpkg.com/@polkadot/api@10.11.2/bundle-polkadot-api.js');
+      }
+      await new Promise(r=>setTimeout(r,800)); // let bundle init
     }
-    const { ApiPromise, WsProvider } = window.polkadotApi || polkadotApi;
+
+    if(typeof window.polkadotApi === 'undefined'){
+      throw new Error('Polkadot API bundle unavailable. Check internet connection.');
+    }
+
+    addLog('Connecting to Konnex Testnet: '+KONNEX_WS,'info');
+    const { ApiPromise, WsProvider } = window.polkadotApi;
     const provider = new WsProvider(KONNEX_WS);
-    const api = await ApiPromise.create({ provider });
+
+    const api = await Promise.race([
+      ApiPromise.create({ provider }),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error('Timeout (15s)')),15000))
+    ]);
+
     chainApi = api;
     chainConnecting = false;
 
     const chain = await api.rpc.system.chain();
-    const nodeVersion = await api.rpc.system.version();
-    addLog(`Connected: ${chain} · Node v${nodeVersion}`,'ok');
+    addLog('Connected: '+chain,'ok');
     statusEl.className='chain-status connected';
-    statusEl.textContent='⛓ '+chain;
-    if(subnetEl) subnetEl.innerHTML=`<span class="badge bg-green">🟢 Connected</span>`;
+    statusEl.textContent='Chain: '+chain;
+    if(subnetEl) subnetEl.innerHTML='<span class="badge bg-green">Connected</span>';
 
-    // Subscribe to new blocks
     api.rpc.chain.subscribeNewHeads(header => {
       currentBlock = header.number.toNumber();
       blockNum = currentBlock;
-      document.getElementById('s-block').textContent = currentBlock.toLocaleString();
-      addLog(`New block #${currentBlock}`,'info');
+      const el = document.getElementById('s-block');
+      if(el) el.textContent = currentBlock.toLocaleString();
     });
 
     return api;
-  } catch(e){
+  }catch(e){
     chainConnecting = false;
     statusEl.className='chain-status error';
-    statusEl.textContent='✗ Offline';
-    if(subnetEl) subnetEl.innerHTML=`<span class="badge bg-red">✗ Cannot Connect</span>`;
-    addLog('Chain connection failed: '+e.message+' — falling back to local state','warn');
-    console.warn('Chain connection failed:',e);
+    statusEl.textContent='Offline';
+    if(subnetEl) subnetEl.innerHTML='<span class="badge bg-red">Cannot Connect</span>';
+    addLog('Chain offline: '+e.message+' (local mode)','warn');
     return null;
   }
 }
@@ -1143,40 +1165,48 @@ const EXT_NAMES = { subwallet:'SubWallet', talisman:'Talisman', polkadotjs:'Polk
 
 async function connectWallet(name){
   const walletName = EXT_NAMES[name] || name;
-  addLog(`Connecting ${walletName}…`,'info');
+  const extKey = EXT_KEYS[name];
+  addLog('Connecting '+walletName+'...','info');
+
+  // Reset modal sub text
+  const subEl = document.querySelector('#modal-connect-view .modal-sub');
+  if(subEl) subEl.textContent = 'Connect your Substrate wallet to interact with Konnex Testnet. Transactions will be signed and broadcast on-chain.';
 
   try{
-    // Try real extension via extension-dapp
-    let accounts = [];
-    const extDapp = window.polkadotExtensionDapp || (typeof web3Enable !== 'undefined' ? { web3Enable, web3Accounts } : null);
+    // PRIMARY: window.injectedWeb3 - works with SubWallet, Talisman, Polkadot.js, Fearless
+    const injected = window.injectedWeb3 || {};
+    const ext = injected[extKey];
 
-    if(extDapp){
-      const extensions = await extDapp.web3Enable('MemoryMesh AI');
-      if(extensions.length === 0) throw new Error('No extension found. Please install '+walletName);
-      accounts = await extDapp.web3Accounts();
-      if(accounts.length === 0) throw new Error('No accounts found in '+walletName);
-    } else if(window.injectedWeb3?.[EXT_KEYS[name]]){
-      const ext = window.injectedWeb3[EXT_KEYS[name]];
-      await ext.enable('MemoryMesh AI');
-      const rawAccs = await ext.accounts?.get?.() || [];
-      accounts = rawAccs.map(a=>({ address:a.address, meta:{ name:a.name||'Account' } }));
-    } else {
-      throw new Error(walletName+' extension not found. Please install it first.');
-    }
-
-    const acc = accounts[0];
-    // Get signer from extension
-    let signer = null;
-    if(extDapp){
-      const { web3FromAddress } = extDapp;
-      if(web3FromAddress){
-        const injector = await web3FromAddress(acc.address);
-        signer = injector.signer;
+    if(ext){
+      const injector = await ext.enable('MemoryMesh AI');
+      const inj = injector || ext;
+      let rawAccs = [];
+      if(inj.accounts && typeof inj.accounts.get === 'function'){
+        rawAccs = await inj.accounts.get();
+      } else if(ext.accounts && typeof ext.accounts.get === 'function'){
+        rawAccs = await ext.accounts.get();
       }
+      if(!rawAccs || rawAccs.length === 0){
+        throw new Error('No accounts in '+walletName+'. Please create/import an account first.');
+      }
+      const acc = rawAccs[0];
+      const address = typeof acc === 'string' ? acc : (acc.address || acc);
+      const signer = (inj.signer) || (ext.signer) || null;
+      await setWalletConnected(address, walletName, signer);
+      closeWalletModal();
+      return;
     }
 
-    await setWalletConnected(acc.address, walletName, signer);
-    closeWalletModal();
+    // No extension found
+    const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
+    if(isMobile){
+      if(subEl) subEl.innerHTML = '<span style="color:var(--yellow);font-size:.8rem">On mobile: Open this site inside the <strong>'+walletName+'</strong> built-in browser (DApp browser). Tap the browser/globe icon inside '+walletName+' and paste this URL.</span>';
+      throw new Error('Open this page inside the '+walletName+' DApp browser');
+    } else {
+      if(subEl) subEl.innerHTML = '<span style="color:var(--yellow);font-size:.8rem">Install the <strong>'+walletName+'</strong> browser extension, then refresh this page.</span>';
+      throw new Error(walletName+' extension not detected. Install it and refresh.');
+    }
+
   }catch(e){
     toast(e.message,'error');
     addLog('Wallet error: '+e.message,'err');

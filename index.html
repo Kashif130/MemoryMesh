@@ -435,7 +435,9 @@ select option{background:var(--card);}
   </div>
   <div style="max-width:1200px;margin:0 auto;padding:0 1rem 3rem;">
     <div class="alert alert-info" style="margin-bottom:1.5rem;">
-      ⛓ <strong>Fully Onchain Mode:</strong> All robot registrations, task posts, PoPW scores, and memory writes are submitted as real extrinsics to Konnex Testnet. Connect your wallet to sign transactions. Without a wallet, the simulator runs with on-chain state read-back.
+      ⛓ <strong>Fully Onchain via system.remarkWithEvent:</strong> 
+      Since the <code>memorymesh</code> pallet is not yet deployed on Konnex Testnet, all data is encoded as JSON and submitted as real <code>system.remarkWithEvent</code> extrinsics — these are genuine onchain transactions with real tx hashes you can verify in the explorer. 
+      Connect your Talisman/SubWallet wallet to sign transactions. tKNX balance required for fees.
     </div>
     <div class="section-title">Core Primitives</div>
     <div class="features">
@@ -728,6 +730,8 @@ select option{background:var(--card);}
 const KONNEX_WS  = 'wss://testnet-rpc1.konnex.world:39944';
 const KONNEX_HTTP= 'https://testnet-rpc1.konnex.world';
 const EXPLORER   = 'https://subnets.testnet.konnex.world';
+// tKNX has 9 decimals (confirmed from Talisman network settings)
+const TOKEN_DECIMALS = 9;
 const PALLET     = 'memorymesh'; // pallet name on chain
 
 // ════════════════════════════════════════════
@@ -778,7 +782,7 @@ function tierBadge(score){ const {label,icon,cls}=tierInfo(score); const m={yell
 function statusBadge(s){ const m={open:'bg-cyan',assigned:'bg-yellow',executing:'bg-yellow',completed:'bg-green',failed:'bg-red'}; return `<span class="badge ${m[s]||'bg-muted'}">${s}</span>`; }
 function scoreColor(v){ return v>=.8?'var(--green)':v>=.5?'var(--yellow)':'var(--red)'; }
 function scoreBarHTML(v,color){ const c=color||scoreColor(v); return `<div class="score-bar"><div class="score-fill" style="width:${(v*100).toFixed(0)}%;background:${c}"></div></div>`; }
-function explorerTxLink(txHash){ if(!txHash) return '—'; return `<a class="tx-link" href="${EXPLORER}/extrinsic/${txHash}" target="_blank" title="${txHash}">${shortTx(txHash)}</a>`; }
+function explorerTxLink(txHash){ if(!txHash) return '—'; return `<a class="tx-link" href="${EXPLORER}/explorer?tx=${txHash}" target="_blank" title="${txHash}">${shortTx(txHash)}</a>`; }
 function explorerBlockLink(blk){ return `<a class="tx-link" href="${EXPLORER}/block/${blk}" target="_blank">#${blk}</a>`; }
 
 // ════════════════════════════════════════════
@@ -849,6 +853,7 @@ async function initChain(){
   statusEl.className='chain-status connecting';
   statusEl.textContent='Connecting...';
   addLog('Loading Polkadot API bundle...','info');
+  addLog('Mode: system.remarkWithEvent — real onchain txs on Konnex Testnet','info');
 
   try{
     const loaded = await loadPolkadotApi();
@@ -897,33 +902,56 @@ async function initChain(){
 // ════════════════════════════════════════════
 
 /**
- * Sign and send an extrinsic. Returns { txHash, blockHash, blockNumber }.
- * Falls back to local simulation if wallet not connected or chain offline.
+ * memorymesh pallet Konnex chain par exist nahi karta.
+ * Hum system.remarkWithEvent use karte hain — yeh har Substrate chain par available hai.
+ * MemoryMesh data JSON ke roop mein remark mein encode ho ke REAL onchain tx ke saath jata hai.
+ * Returns { txHash, blockHash, blockNumber, local }
  */
-async function sendExtrinsic(palletMethod, args, logLabel){
+async function sendExtrinsic(palletMethod, args, logLabel, remarkData){
   const api = chainApi;
-  if(!api){ addLog(`[LOCAL] ${logLabel}`,'warn'); return { txHash: hash(logLabel+Date.now()), blockNumber: nextBlock(), local: true }; }
-  if(!WALLET.signer || WALLET.readOnly){ addLog(`[LOCAL] ${logLabel} (no signer — read-only mode)`,'warn'); return { txHash: hash(logLabel+Date.now()), blockNumber: nextBlock(), local: true }; }
+  if(!api){
+    addLog(`[LOCAL] ${logLabel} — chain offline`,'warn');
+    return { txHash: hash(logLabel+Date.now()), blockNumber: nextBlock(), local: true };
+  }
+  if(!WALLET.signer || WALLET.readOnly){
+    addLog(`[LOCAL] ${logLabel} — wallet connect karo onchain tx ke liye`,'warn');
+    return { txHash: hash(logLabel+Date.now()), blockNumber: nextBlock(), local: true };
+  }
+
+  // Compact remark payload: MemoryMesh data onchain encode hoti hai
+  const remarkPayload = JSON.stringify({
+    p: 'MM/v1',
+    m: palletMethod,
+    d: remarkData || {},
+    t: Math.floor(Date.now()/1000)
+  });
+  const remark = remarkPayload.length > 512 ? remarkPayload.slice(0,509)+'...' : remarkPayload;
 
   return new Promise((resolve, reject)=>{
     try{
-      const [pallet,method] = palletMethod.split('.');
-      const call = api.tx[pallet][method](...args);
-      addLog(`Broadcasting: ${palletMethod}(${args.map(a=>String(a).slice(0,20)).join(', ')})…`,'info');
+      // system.remarkWithEvent exists on Substrate >= 4, fallback to system.remark
+      const remarkCall = (api.tx.system && api.tx.system.remarkWithEvent)
+        ? api.tx.system.remarkWithEvent(remark)
+        : api.tx.system.remark(remark);
 
-      call.signAndSend(WALLET.address, { signer: WALLET.signer }, ({ status, dispatchError, txHash })=>{
+      addLog(`⛓ Signing & broadcasting: ${logLabel}…`,'info');
+      let resolved = false;
+
+      remarkCall.signAndSend(WALLET.address, { signer: WALLET.signer }, ({ status, dispatchError, txHash })=>{
         if(dispatchError){
           const errMsg = dispatchError.isModule
-            ? api.registry.findMetaError(dispatchError.asModule).name
+            ? (() => { try{ return api.registry.findMetaError(dispatchError.asModule).name; }catch(e2){ return dispatchError.toString(); } })()
             : dispatchError.toString();
           addLog(`Tx failed: ${errMsg}`,'err');
-          reject(new Error(errMsg));
+          if(!resolved){ resolved=true; reject(new Error(errMsg)); }
           return;
         }
-        if(status.isInBlock){
+        if(status.isInBlock && !resolved){
+          resolved = true;
           const bh = status.asInBlock.toString();
-          addLog(`✅ Included in block ${bh.slice(0,16)}…`,'ok');
-          resolve({ txHash: txHash.toString(), blockHash: bh, blockNumber: currentBlock || nextBlock(), local: false });
+          const txStr = txHash.toString();
+          addLog(`✅ [⛓ ONCHAIN] Block: ${bh.slice(0,18)}… | Tx: ${txStr.slice(0,18)}…`,'ok');
+          resolve({ txHash: txStr, blockHash: bh, blockNumber: currentBlock || nextBlock(), local: false });
         }
         if(status.isFinalized){
           addLog(`⛓ Finalized: ${txHash.toString().slice(0,20)}…`,'ok');
@@ -971,7 +999,8 @@ async function registerRobotCore(owner, hw, label, type='drone'){
     const result = await sendExtrinsic(
       `${PALLET}.registerRobot`,
       ['0x'+hwHash, label||'Robot', type||'drone'],
-      `registerRobot(${hwHash.slice(0,12)}, ${label})`
+      `registerRobot(${hwHash.slice(0,12)}, ${label})`,
+      { robotId, hwHash, label, type, owner }
     );
     txHash = result.txHash;
     blockNumber = result.blockNumber;
@@ -1004,11 +1033,12 @@ async function postTaskCore(instr, type, reward, poster, robotId=null){
   // Try onchain
   let txHash = null, blockNumber = nextBlock(), localTx = true;
   try{
-    const rewardPlanck = Math.round(reward * 1_000_000_000_000); // 12 decimals
+    const rewardPlanck = Math.round(reward * 1_000_000_000); // 9 decimals (tKNX = 9 decimals per Talisman)
     const result = await sendExtrinsic(
       `${PALLET}.postTask`,
       ['0x'+instrHash.slice(2,66), type, rewardPlanck, robotId||null],
-      `postTask(${type}, ${reward}KNX)`
+      `postTask(${type}, ${reward}KNX)`,
+      { taskId, type, reward, poster, instrHash }
     );
     txHash = result.txHash;
     blockNumber = result.blockNumber;
@@ -1099,7 +1129,8 @@ async function submitPoPWOnchain(robotId, taskId, scores){
     const result = await sendExtrinsic(
       `${PALLET}.submitPopw`,
       ['0x'+robotId.slice(2,66), '0x'+taskId.slice(2,66), popwInt, Math.round(scores.safety*10000), Math.round(scores.match*10000), Math.round(scores.eff*10000)],
-      `submitPoPW(${robotId.slice(0,12)}, score=${scores.popw})`
+      `submitPoPW(${robotId.slice(0,12)}, score=${scores.popw})`,
+      { robotId: robotId.slice(0,16), taskId: taskId.slice(0,16), scores }
     );
     return result;
   }catch(e){
@@ -1124,7 +1155,8 @@ async function writeMemoryOnchain(robotId, taskId, taskType, instruction, strate
     const result = await sendExtrinsic(
       `${PALLET}.writeMemory`,
       ['0x'+robotId.slice(2,66), '0x'+taskId.slice(2,66), taskType, '0x'+instrHash.slice(2,66), Math.round(scores.popw*10000)],
-      `writeMemory(${robotId.slice(0,12)}, ${taskType}, popw=${scores.popw})`
+      `writeMemory(${robotId.slice(0,12)}, ${taskType}, popw=${scores.popw})`,
+      { robotId: robotId.slice(0,16), taskId: taskId.slice(0,16), taskType, strategy, popw: scores.popw }
     );
     entry.tx_hash = result.txHash;
     entry.local   = result.local;
@@ -1143,7 +1175,8 @@ async function updateReputationOnchain(robotId, scores){
     const result = await sendExtrinsic(
       `${PALLET}.updateReputation`,
       ['0x'+robotId.slice(2,66), Math.round(scores.popw*10000)],
-      `updateReputation(${robotId.slice(0,12)}, score=${scores.popw})`
+      `updateReputation(${robotId.slice(0,12)}, score=${scores.popw})`,
+      { robotId: robotId.slice(0,16), popw: scores.popw }
     );
     return result;
   }catch(e){

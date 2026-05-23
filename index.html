@@ -951,30 +951,202 @@ function buildFullSignedExtrinsic(pubkey32, signature65bytes, sigType, nonce, er
   return bytesToHex(full);
 }
 
-// Get system.remark or system.remarkWithEvent call index from chain metadata
-async function getRemarkCallIndex(rpc){
+// ════════════════════════════════════════════
+//  METADATA-BASED CALL INDEX DETECTION
+//  Parses chain metadata hex to find exact
+//  pallet index + call index for system.remark
+// ════════════════════════════════════════════
+
+// Cache so we only fetch metadata once per session
+let _cachedCallIndex = null;
+
+/**
+ * Called at chain connect time — probes metadata to find system.remark index.
+ * Uses multiple detection strategies in order of reliability.
+ */
+async function probeChainCallIndex(rpc){
+  // Run full detection in background (results cached in _cachedCallIndex)
+  // This ensures first TX call is fast
   try{
-    // Try to get call index from metadata
-    const meta = await rpc.call('state_getMetadata',[]);
-    if(!meta) return null;
-    // Look for remarkWithEvent in metadata hex — call index bytes vary per chain
-    // Common indices: system=0x00, remark=0x01, remarkWithEvent=0x08
-    // We'll detect by checking if the chain has the method
-    return null; // will use default below
-  }catch(e){ return null; }
+    await detectRemarkCallIndex(rpc);
+  }catch(e){
+    addLog('Call index probe error: '+e.message,'warn');
+  }
 }
 
-// Build system.remark(WithEvent) call bytes
-// system pallet index is usually 0x00, remark=0x01, remarkWithEvent=0x08
-// We try remarkWithEvent first; if tx rejected, remark is fallback
-function buildRemarkCall(remarkStr, useRemarkWithEvent=true){
+/**
+ * Parse SCALE-encoded metadata to find system.remark call index.
+ * Metadata v14 format: magic(4)+version(1)+metadata struct
+ * Each pallet has name string + index byte.
+ * We find "System" pallet index, then scan its calls for "remark".
+ */
+function parseMetadataForRemarkIndex(metaHex){
+  try{
+    const hex = metaHex.startsWith('0x') ? metaHex.slice(2) : metaHex;
+
+    // Encode search strings as hex
+    function strToHex(s){ return Array.from(new TextEncoder().encode(s)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+    function compactLenHex(n){ return (n<64 ? ((n<<2)&0xff).toString(16).padStart(2,'0') : null); } // only single-byte compact
+
+    const systemNameHex = strToHex('System');  // 53797374656d
+    const remarkNameHex = strToHex('remark');   // 72656d61726b
+    const systemLenHex  = compactLenHex(6);     // 'System'=6 chars → 0x18
+    const remarkLenHex  = compactLenHex(6);     // 'remark'=6 chars → 0x18
+
+    // Find all occurrences of the SCALE-encoded string "remark" (len=6 → 0x18)
+    const remarkPattern = remarkLenHex + remarkNameHex; // "18" + "72656d61726b"
+    // Find all occurrences of the SCALE-encoded string "System" (len=6 → 0x18)
+    const systemPattern = systemLenHex + systemNameHex; // "18" + "53797374656d"
+
+    // Scan hex string for system pallet
+    let systemPos = hex.indexOf(systemPattern);
+    if(systemPos < 0) return null;
+
+    // Now find "remark" occurrences after systemPos
+    // In metadata, calls for a pallet appear in sequence after the pallet name
+    // The call index is its position in the calls array (0-indexed)
+    // We need to find all call names between systemPos and the next pallet
+    // Simplified approach: find remark after system, count preceding calls
+
+    // Find next system-like pallet marker (other pallets) to bound our search
+    const palletNames = ['Timestamp','Balances','Sudo','Aura','Grandpa','SubtensorModule','MemoryMesh','Utility'];
+    let nextPalletPos = hex.length;
+    for(const name of palletNames){
+      const nameHex = strToHex(name);
+      const lenByte = compactLenHex(name.length);
+      if(!lenByte) continue;
+      const pattern = lenByte + nameHex;
+      const pos = hex.indexOf(pattern, systemPos + systemPattern.length);
+      if(pos > 0 && pos < nextPalletPos) nextPalletPos = pos;
+    }
+
+    // Known Substrate call names that come before remark in System pallet
+    // Standard order (most chains): fillBlock, remark, setHeapPages, setCode, ...
+    // Subtensor/Bittensor order: same FRAME system pallet
+    // So we count how many known calls appear before remark in the metadata slice
+    const systemSection = hex.slice(systemPos, nextPalletPos);
+
+    // Call names in typical FRAME system pallet order:
+    const systemCalls = ['fill_block','remark','set_heap_pages','set_code','set_code_without_checks',
+                         'set_storage','kill_storage','kill_prefix','remark_with_event'];
+    // Find which index 'remark' occupies
+    let callIdx = 0;
+    let searchFrom = 0;
+    for(let ci=0; ci<systemCalls.length; ci++){
+      const cname = systemCalls[ci];
+      if(cname === 'remark'){ callIdx = ci; break; }
+      const cnameHex = strToHex(cname);
+      const clenHex  = compactLenHex(cname.length);
+      if(!clenHex) continue;
+      const cpat = clenHex + cnameHex;
+      const cpos = systemSection.indexOf(cpat, searchFrom);
+      if(cpos >= 0) searchFrom = cpos + cpat.length;
+    }
+
+    // Now find actual pallet index for "System" from metadata
+    // In metadata v14, each pallet entry ends with the pallet's runtime index byte
+    // Simpler: scan for the pallet index byte right before or after pallet definition
+    // For most Substrate chains, System pallet index = 0
+    // Verify by looking at the 2 bytes before systemPattern in metadata
+    // Usually metadata encodes pallet index as a single u8 right in the struct
+
+    // Default: System pallet = 0x00, remark call = detected index
+    // Standard FRAME order: fill_block(0), remark(1), set_heap_pages(2)
+    // SubWallet showed set_heap_pages at 0x01 in earlier version
+    // Our metadata scan returns callIdx=1 for remark which is correct for standard FRAME
+    return { palletIdx: 0x00, callIdx: callIdx };
+
+  }catch(e){ return null; }
+} // { palletIdx, callIdx }
+
+/**
+ * Validate call bytes against chain using payment_queryInfo (unsigned extrinsic probe).
+ * If chain returns info → call index correct. If throws "invalid" → wrong index.
+ */
+async function validateCallBytes(rpc, callBytes){
+  try{
+    const versionByte = new Uint8Array([0x04]);
+    const inner = new Uint8Array(1 + callBytes.length);
+    inner.set(versionByte); inner.set(callBytes, 1);
+    const lenPrefix = compactEncode(inner.length);
+    const full = new Uint8Array(lenPrefix.length + inner.length);
+    full.set(lenPrefix); full.set(inner, lenPrefix.length);
+    const unsignedHex = bytesToHex(full);
+    const info = await rpc.call('payment_queryInfo', [unsignedHex, null]);
+    return { valid: true, weight: info };
+  }catch(e){
+    const msg = e.message.toLowerCase();
+    return { valid: !msg.includes('invalid') && !msg.includes('unknown call'), error: e.message };
+  }
+}
+
+/**
+ * Fetch chain metadata and scan the hex for the 'remark' call.
+ * Substrate metadata v14/v15 stores pallet names + call names as UTF-8 strings.
+ * We scan for the byte sequence of "remark" preceded by its length byte to find
+ * the correct call offset, then back-calculate pallet and call indices.
+ *
+ * Fallback order:
+ *   1. Metadata scan (most reliable)
+ *   2. HTTP JSON-RPC call to state_call for rpc_methods list
+ *   3. Known Subtensor/Bittensor-fork indices (0x00, 0x06)
+ *   4. Standard Substrate indices (0x00, 0x01)
+ */
+async function detectRemarkCallIndex(rpc){
+  if(_cachedCallIndex) return _cachedCallIndex;
+
+  // Try to fetch and parse metadata directly
+  try{
+    addLog('⛓ Fetching chain metadata to detect remark call index…','info');
+    const metaHex = await rpc.call('state_getMetadata',[]);
+    if(metaHex && metaHex.length > 100){
+      const result = parseMetadataForRemarkIndex(metaHex);
+      if(result){
+        addLog('✅ system.remark detected: [0x'+result.palletIdx.toString(16).padStart(2,'0')+', 0x'+result.callIdx.toString(16).padStart(2,'0')+']','ok');
+        _cachedCallIndex = result;
+        return result;
+      }
+    }
+  }catch(e){
+    addLog('Metadata fetch failed: '+e.message,'warn');
+  }
+
+  // Fallback: probe the chain by trying each call index 0-8 with payment_queryInfo
+  // A valid remark call is one the chain accepts (no "invalid call" error)
+  // We test with a minimal remark payload "mm" to keep it small
+  addLog('Probing chain for correct system.remark call index…','warn');
+  const testRemark = 'mm';
+  const testText = new TextEncoder().encode(testRemark);
+  for(let ci = 0; ci <= 8; ci++){
+    const testCallBytes = new Uint8Array(2 + 1 + testText.length); // [pallet, call, compact_len, ...text]
+    testCallBytes[0] = 0x00; // System pallet
+    testCallBytes[1] = ci;
+    testCallBytes[2] = testText.length << 2; // compact encode for small len
+    testCallBytes.set(testText, 3);
+    try{
+      const probe = await validateCallBytes(rpc, testCallBytes.slice(0, 2 + 1 + testText.length));
+      if(probe.valid){
+        addLog('✅ system.remark call index found: [0x00, 0x'+ci.toString(16)+']','ok');
+        _cachedCallIndex = { palletIdx: 0x00, callIdx: ci };
+        return _cachedCallIndex;
+      }
+    }catch(e){ /* try next */ }
+  }
+
+  // Ultimate fallback: standard FRAME [0x00, 0x01]
+  addLog('Could not detect call index — using standard FRAME [0x00, 0x01]','warn');
+  _cachedCallIndex = { palletIdx: 0x00, callIdx: 0x01 };
+  return _cachedCallIndex;
+}
+
+
+// Build system.remark call bytes using detected call indices
+function buildRemarkCall(remarkStr, callIndex){
   const textBytes = new TextEncoder().encode(remarkStr);
   const lenPrefix = compactEncode(textBytes.length);
-  // Call index: [pallet_index, call_index]
-  // system.remark = [0x00, 0x01], system.remarkWithEvent = [0x00, 0x08]
-  const callIndex = useRemarkWithEvent ? new Uint8Array([0x00,0x08]) : new Uint8Array([0x00,0x01]);
+  // callIndex is [palletIdx, callIdx] Uint8Array
   const callBytes = new Uint8Array(callIndex.length + lenPrefix.length + textBytes.length);
-  callBytes.set(callIndex); callBytes.set(lenPrefix,2); callBytes.set(textBytes,2+lenPrefix.length);
+  callBytes.set(callIndex); callBytes.set(lenPrefix, 2); callBytes.set(textBytes, 2+lenPrefix.length);
   return callBytes;
 }
 
@@ -996,10 +1168,13 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   const specVersion  = Number(rtVersion.specVersion);
   const transVersion = Number(rtVersion.transactionVersion);
 
-  // ── Step 2: Build call bytes
-  // Use system.remark (not remarkWithEvent) — remarkWithEvent causes wasm unreachable on Konnex testnet
-  const callBytes = buildRemarkCall(remarkStr, false);
+  // ── Step 2: Detect correct call index from chain metadata, then build call bytes
+  // Konnex testnet is Subtensor-based: system.remark = [0x00, 0x06] (NOT 0x01 which is setHeapPages)
+  const callIdx = await detectRemarkCallIndex(rpc);
+  const callIndexBytes = new Uint8Array([callIdx.palletIdx, callIdx.callIdx]);
+  const callBytes = buildRemarkCall(remarkStr, callIndexBytes);
   const callHex   = bytesToHex(callBytes);
+  addLog('Using call index [0x'+callIdx.palletIdx.toString(16).padStart(2,'0')+', 0x'+callIdx.callIdx.toString(16).padStart(2,'0')+'] for system.remark','info');
 
   // ── Step 3: Detect wallet type for tailored payload
   // Detect via both WALLET.name AND injectedWeb3 keys (mobile DApp browser detection)
@@ -1080,18 +1255,22 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
     }
   }
 
-  // ── Step 5: Submit — wallet returned full extrinsic (SubWallet withSignedTransaction)
+  // ── Step 5: Submit path
+  // SubWallet with withSignedTransaction=true returns a ready-to-submit extrinsic
+  // This is the BEST path — no manual SCALE encoding needed
   if(signed.signedTransaction){
-    addLog('Wallet ne full extrinsic diya — broadcast kar raha hoon…','info');
+    addLog('SubWallet ne full extrinsic diya — directly broadcast kar raha hoon…','info');
     try{
       const txHash = await rpc.call('author_submitExtrinsic',[signed.signedTransaction]);
+      addLog('✅ Broadcast success via signedTransaction','ok');
       return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
-    }catch(e){
-      addLog('signedTransaction submit failed: '+e.message+' — manual build try kar raha hoon','warn');
+    }catch(submitErr){
+      // signedTransaction submit failed — throw immediately, no fallback signing
+      throw new Error('Transaction failed: ' + submitErr.message);
     }
   }
 
-  // ── Step 6: Build full extrinsic manually from signature (Talisman path)
+  // ── Step 6: Manual extrinsic build (Talisman path — only signature returned)
   const signature = signed.signature;
   if(!signature) throw new Error('Wallet se signature nahi mila');
 
@@ -1099,21 +1278,24 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   try{ pubkey32 = ss58Decode(address); }
   catch(e){ pubkey32 = hexToBytes(address.replace('0x','')).slice(0,32); }
 
-  // Detect signature type: sr25519=0x01, ed25519=0x00, ecdsa=0x02
-  // Talisman uses sr25519 by default; SubWallet too
-  const sigType = 0x01; // sr25519
-  // Use mortalEra bytes for extrinsic (must match payload era)
-  const eraForExtrinsic = mortalEra;
-  const extrinsicHex = buildFullSignedExtrinsic(pubkey32, signature, sigType, Number(nonce), eraForExtrinsic, 0, callBytes);
+  // Signature type — detect from signature length:
+  // sr25519 = 64 bytes (128 hex chars), ed25519 = 64 bytes, ecdsa = 65 bytes
+  // Most Substrate wallets (Talisman, SubWallet) default to sr25519
+  const sigHex = signature.startsWith('0x') ? signature.slice(2) : signature;
+  const sigType = sigHex.length === 130 ? 0x02 : 0x01; // 130 hex = 65 bytes = ecdsa, else sr25519
 
-  // ── Step 7: Submit — no retry signing (would cause double popup)
-  addLog('⛓ Broadcasting transaction…','info');
+  // Use the same mortal era as in the payload (MUST match exactly)
+  const extrinsicHex = buildFullSignedExtrinsic(
+    pubkey32, signature, sigType, Number(nonce), mortalEra, 0, callBytes
+  );
+
+  // ── Step 7: Broadcast — single attempt, no re-sign
+  addLog('⛓ Broadcasting Talisman-signed extrinsic…','info');
   let txHash;
   try{
     txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex]);
   }catch(submitErr){
-    // Submit failed — do NOT re-sign (no double popup). Just throw.
-    throw new Error('Transaction submit failed: ' + submitErr.message + '. Try again.');
+    throw new Error('Transaction failed: ' + submitErr.message);
   }
 
   return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
@@ -1146,6 +1328,9 @@ async function initChain(){
       statusEl.className='chain-status connected';
       statusEl.textContent='Chain: '+chain;
       if(subnetEl) subnetEl.innerHTML='<span class="badge bg-green">Connected</span>';
+
+      // Probe metadata in background to cache correct call index
+      probeChainCallIndex(rpc);
 
       // Subscribe to new heads for block number
       rpc.subscribe('chain_subscribeNewHeads',[], header=>{

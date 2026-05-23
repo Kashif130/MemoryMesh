@@ -10,7 +10,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
 
-<!-- Polkadot wallets inject window.injectedWeb3 automatically — no extra script needed -->
+<!-- @polkadot/api CDN — handles CheckMetadataHash, SCALE encoding, extrinsic building automatically -->
+<script src="https://cdn.jsdelivr.net/npm/@polkadot/util@13/bundle-polkadot-util.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@polkadot/util-crypto@13/bundle-polkadot-util-crypto.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@polkadot/types@10/bundle-polkadot-types.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@polkadot/api@10/bundle-polkadot-api.min.js"></script>
 
 <style>
 /* ═══════════ RESET & ROOT ═══════════ */
@@ -790,616 +794,100 @@ function scoreBarHTML(v,color){ const c=color||scoreColor(v); return `<div class
 function explorerTxLink(txHash){ if(!txHash) return '—'; return `<a class="tx-link" href="${EXPLORER}/explorer?tx=${txHash}" target="_blank" title="${txHash}">${shortTx(txHash)}</a>`; }
 function explorerBlockLink(blk){ return `<a class="tx-link" href="${EXPLORER}/block/${blk}" target="_blank">#${blk}</a>`; }
 
-// ════════════════════════════════════════════
-//  CHAIN CONNECTION
-// ════════════════════════════════════════════
-// ════════════════════════════════════════════
-//  NATIVE JSON-RPC OVER WEBSOCKET
-//  (No @polkadot/api CDN bundle needed)
-//  Uses raw WebSocket + window.injectedWeb3 signer
-// ════════════════════════════════════════════
-
-// Lightweight JSON-RPC client
-class SubstrateRPC {
-  constructor(){ this.ws=null; this.reqId=1; this.pending=new Map(); this.subs=new Map(); this.connected=false; }
-
-  connect(url){
-    return new Promise((resolve,reject)=>{
-      const ws = new WebSocket(url);
-      this.ws = ws;
-      const timer = setTimeout(()=>{ ws.close(); reject(new Error('Timeout')); }, 10000);
-      ws.onopen  = ()=>{ clearTimeout(timer); this.connected=true; resolve(this); };
-      ws.onerror = ()=>{ clearTimeout(timer); reject(new Error('WS error')); };
-      ws.onclose = ()=>{ this.connected=false; };
-      ws.onmessage = ({data})=>{
-        let msg; try{ msg=JSON.parse(data); }catch(e){ return; }
-        if(msg.id !== undefined){
-          const p = this.pending.get(msg.id);
-          if(p){ this.pending.delete(msg.id); msg.error ? p.reject(new Error(msg.error.message||JSON.stringify(msg.error))) : p.resolve(msg.result); }
-        } else if(msg.method === 'chain_newHead' || msg.method?.startsWith('state_') || msg.params){
-          const cb = this.subs.get(msg.params?.subscription);
-          if(cb) cb(msg.params?.result);
-        }
-      };
-    });
-  }
-
-  call(method, params=[]){
-    return new Promise((resolve,reject)=>{
-      const id = this.reqId++;
-      this.pending.set(id, {resolve,reject});
-      this.ws.send(JSON.stringify({jsonrpc:'2.0',id,method,params}));
-      setTimeout(()=>{ if(this.pending.has(id)){ this.pending.delete(id); reject(new Error('RPC timeout: '+method)); } },15000);
-    });
-  }
-
-  async subscribe(method, params, cb){
-    const subId = await this.call(method, params);
-    this.subs.set(subId, cb);
-    return subId;
-  }
-
-  close(){ if(this.ws) this.ws.close(); }
-}
 
 // ════════════════════════════════════════════
-//  PURE-JS SCALE ENCODER + SS58 DECODER
-//  No external dependency needed
+//  CHAIN CONNECTION — @polkadot/api CDN
+//  Automatically handles:
+//  ✅ CheckMetadataHash extension
+//  ✅ Correct call indices from metadata
+//  ✅ SCALE encoding / extrinsic building
+//  ✅ Talisman + SubWallet signing
 // ════════════════════════════════════════════
 
-// Base58 alphabet used by Substrate SS58
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+// polkadotApi global is exposed by the CDN bundle as window.polkadotApi
+// We wait for it to load before connecting.
 
-function base58Decode(str){
-  const bytes = [0];
-  for(const char of str){
-    let carry = BASE58_ALPHABET.indexOf(char);
-    if(carry < 0) throw new Error('Invalid base58 char: '+char);
-    for(let i=0;i<bytes.length;i++){
-      carry += bytes[i]*58;
-      bytes[i] = carry & 0xff;
-      carry >>= 8;
-    }
-    while(carry){ bytes.push(carry&0xff); carry>>=8; }
+function getPolkadotApi(){
+  // CDN bundle exposes the API differently depending on version
+  // Try multiple global names
+  return window.polkadotApi || window['@polkadot/api'] || null;
+}
+
+async function waitForPolkadotApi(timeoutMs = 15000){
+  const start = Date.now();
+  while(Date.now() - start < timeoutMs){
+    const lib = getPolkadotApi();
+    if(lib && lib.ApiPromise) return lib;
+    await new Promise(r => setTimeout(r, 100));
   }
-  // Leading zeros
-  for(const char of str){
-    if(char !== '1') break;
-    bytes.push(0);
-  }
-  return new Uint8Array(bytes.reverse());
+  throw new Error('@polkadot/api CDN bundle did not load within timeout');
 }
-
-// Decode SS58 address → raw 32-byte public key
-function ss58Decode(address){
-  const decoded = base58Decode(address);
-  // decoded = [prefix_varint...] + [32 bytes pubkey] + [2 bytes checksum]
-  // Simple prefix: single-byte prefix < 64 → 1 byte; else 2 bytes
-  const prefix = decoded[0];
-  const pubkeyOffset = prefix < 64 ? 1 : 2;
-  return decoded.slice(pubkeyOffset, pubkeyOffset + 32);
-}
-
-// SCALE compact integer encoding
-function compactEncode(n){
-  if(n < 64)    return new Uint8Array([n << 2]);
-  if(n < 16384) return new Uint8Array([(((n<<2)|0x01)&0xff), ((n<<2)>>8)&0xff]);
-  // 4-byte mode for larger values
-  const val = (n << 2) | 0x02;
-  return new Uint8Array([val&0xff,(val>>8)&0xff,(val>>16)&0xff,(val>>24)&0xff]);
-}
-
-function hexToBytes(hex){
-  const h = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const arr = new Uint8Array(h.length/2);
-  for(let i=0;i<arr.length;i++) arr[i]=parseInt(h.slice(i*2,i*2+2),16);
-  return arr;
-}
-
-function bytesToHex(bytes){ return '0x'+Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join(''); }
-
-function hexStr(str){ return Array.from(new TextEncoder().encode(str)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
-
-// SCALE-encode a byte string (compact length prefix + bytes)
-function scaleEncodeBytes(hex){
-  const bytes = hexToBytes(hex);
-  const lenEncoded = compactEncode(bytes.length);
-  const result = new Uint8Array(lenEncoded.length + bytes.length);
-  result.set(lenEncoded); result.set(bytes, lenEncoded.length);
-  return result;
-}
-
-// Build full signed Substrate extrinsic v4 (SCALE encoded)
-// Returns hex string ready for author_submitExtrinsic
-function buildFullSignedExtrinsic(pubkey32, signature65bytes, sigType, nonce, era, tip, callBytes){
-  // sigType: 0x00=ed25519, 0x01=sr25519, 0x02=ecdsa
-  // MultiAddress::Id = 0x00 + 32 bytes pubkey
-  const addrBytes = new Uint8Array(33);
-  addrBytes[0] = 0x00; // MultiAddress::Id variant
-  addrBytes.set(pubkey32, 1);
-
-  const nonceCompact = compactEncode(nonce);
-  const tipCompact   = compactEncode(tip);
-  // era: if '0x00' = immortal (1 byte), else mortal era hex (2 bytes)
-  const eraBytes     = (era === '0x00') ? new Uint8Array([0x00]) : hexToBytes(era);
-
-  // Signature type byte
-  const sigTypeByte = new Uint8Array([sigType]);
-  const sigBytes    = hexToBytes(typeof signature65bytes === 'string' ? signature65bytes : bytesToHex(signature65bytes));
-
-  // Extrinsic body = addr + sigtype + sig + era + nonce + tip + call
-  const body = new Uint8Array(
-    addrBytes.length + sigTypeByte.length + sigBytes.length +
-    eraBytes.length + nonceCompact.length + tipCompact.length + callBytes.length
-  );
-  let offset = 0;
-  const append = (arr)=>{ body.set(arr,offset); offset+=arr.length; };
-  append(addrBytes); append(sigTypeByte); append(sigBytes);
-  append(eraBytes); append(nonceCompact); append(tipCompact);
-  append(callBytes);
-
-  // Version byte: 0x84 = 0x80 (signed) | 0x04 (v4)
-  const versionByte = new Uint8Array([0x84]);
-  const inner = new Uint8Array(versionByte.length + body.length);
-  inner.set(versionByte); inner.set(body, 1);
-
-  // Prefix with compact-encoded length
-  const lenPrefix = compactEncode(inner.length);
-  const full = new Uint8Array(lenPrefix.length + inner.length);
-  full.set(lenPrefix); full.set(inner, lenPrefix.length);
-
-  return bytesToHex(full);
-}
-
-// ════════════════════════════════════════════
-//  CHECKSIGNED EXTRINSIC WITH CHECKMETADATAHASH SUPPORT
-//  Same as buildFullSignedExtrinsic but appends mode byte (0x00)
-//  after tip when CheckMetadataHash extension is present on chain.
-//
-//  Substrate extrinsic signed area (v4):
-//  [MultiAddr(33)] [SigType(1)] [Sig(64/65)] [Era] [Nonce(compact)] [Tip(compact)]
-//  [CheckMetadataHash.mode(1)] ← THIS byte is what was missing
-//  [call bytes]
-//
-//  Without this byte, chain's WASM runtime hits unreachable() during decode → rejected.
-// ════════════════════════════════════════════
-function buildSignedExtrinsicWithMetaHash(pubkey32, signature, sigType, nonce, era, tip, callBytes, hasMetaHash){
-  const addrBytes = new Uint8Array(33);
-  addrBytes[0] = 0x00; // MultiAddress::Id
-  addrBytes.set(pubkey32, 1);
-
-  const nonceCompact = compactEncode(nonce);
-  const tipCompact   = compactEncode(tip);
-  const eraBytes     = (era === '0x00') ? new Uint8Array([0x00]) : hexToBytes(era);
-  const sigTypeByte  = new Uint8Array([sigType]);
-  const sigBytes     = hexToBytes(typeof signature === 'string' ? signature : bytesToHex(signature));
-
-  // CheckMetadataHash.mode = 0x00 means "do not verify metadata hash"
-  // This is a SCALE Option<u8>: None=0x00. Without it, runtime panics.
-  const metaHashExtra = hasMetaHash ? new Uint8Array([0x00]) : new Uint8Array(0);
-
-  const bodyLen = addrBytes.length + sigTypeByte.length + sigBytes.length +
-                  eraBytes.length + nonceCompact.length + tipCompact.length +
-                  metaHashExtra.length + callBytes.length;
-  const body = new Uint8Array(bodyLen);
-  let off = 0;
-  const w = (arr)=>{ body.set(arr, off); off += arr.length; };
-  w(addrBytes); w(sigTypeByte); w(sigBytes);
-  w(eraBytes); w(nonceCompact); w(tipCompact);
-  w(metaHashExtra);   // ← the missing byte that caused wasm unreachable
-  w(callBytes);
-
-  // Version byte 0x84 = signed(0x80) | v4(0x04)
-  const inner = new Uint8Array(1 + body.length);
-  inner[0] = 0x84;
-  inner.set(body, 1);
-
-  const lenPrefix = compactEncode(inner.length);
-  const full = new Uint8Array(lenPrefix.length + inner.length);
-  full.set(lenPrefix); full.set(inner, lenPrefix.length);
-
-  return bytesToHex(full);
-}
-
-// ════════════════════════════════════════════
-//  METADATA-BASED CALL INDEX DETECTION
-//  Parses chain metadata hex to find exact
-//  pallet index + call index for system.remark
-// ════════════════════════════════════════════
-
-// Cache so we only fetch metadata once per session
-let _cachedCallIndex = null;
-
-/**
- * Called at chain connect time — probes metadata to find system.remark index.
- * Uses multiple detection strategies in order of reliability.
- */
-async function probeChainCallIndex(rpc){
-  // Run full detection in background (results cached in _cachedCallIndex)
-  // This ensures first TX call is fast
-  try{
-    await detectRemarkCallIndex(rpc);
-  }catch(e){
-    addLog('Call index probe error: '+e.message,'warn');
-  }
-}
-
-/**
- * Parse SCALE-encoded metadata to find system.remark call index.
- * Metadata v14 format: magic(4)+version(1)+metadata struct
- * Each pallet has name string + index byte.
- * We find "System" pallet index, then scan its calls for "remark".
- */
-function parseMetadataForRemarkIndex(metaHex){
-  try{
-    const hex = metaHex.startsWith('0x') ? metaHex.slice(2) : metaHex;
-
-    // Encode search strings as hex
-    function strToHex(s){ return Array.from(new TextEncoder().encode(s)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
-    function compactLenHex(n){ return (n<64 ? ((n<<2)&0xff).toString(16).padStart(2,'0') : null); } // only single-byte compact
-
-    const systemNameHex = strToHex('System');  // 53797374656d
-    const remarkNameHex = strToHex('remark');   // 72656d61726b
-    const systemLenHex  = compactLenHex(6);     // 'System'=6 chars → 0x18
-    const remarkLenHex  = compactLenHex(6);     // 'remark'=6 chars → 0x18
-
-    // Find all occurrences of the SCALE-encoded string "remark" (len=6 → 0x18)
-    const remarkPattern = remarkLenHex + remarkNameHex; // "18" + "72656d61726b"
-    // Find all occurrences of the SCALE-encoded string "System" (len=6 → 0x18)
-    const systemPattern = systemLenHex + systemNameHex; // "18" + "53797374656d"
-
-    // Scan hex string for system pallet
-    let systemPos = hex.indexOf(systemPattern);
-    if(systemPos < 0) return null;
-
-    // Now find "remark" occurrences after systemPos
-    // In metadata, calls for a pallet appear in sequence after the pallet name
-    // The call index is its position in the calls array (0-indexed)
-    // We need to find all call names between systemPos and the next pallet
-    // Simplified approach: find remark after system, count preceding calls
-
-    // Find next system-like pallet marker (other pallets) to bound our search
-    const palletNames = ['Timestamp','Balances','Sudo','Aura','Grandpa','SubtensorModule','MemoryMesh','Utility'];
-    let nextPalletPos = hex.length;
-    for(const name of palletNames){
-      const nameHex = strToHex(name);
-      const lenByte = compactLenHex(name.length);
-      if(!lenByte) continue;
-      const pattern = lenByte + nameHex;
-      const pos = hex.indexOf(pattern, systemPos + systemPattern.length);
-      if(pos > 0 && pos < nextPalletPos) nextPalletPos = pos;
-    }
-
-    // Known Substrate call names that come before remark in System pallet
-    // Standard order (most chains): fillBlock, remark, setHeapPages, setCode, ...
-    // Subtensor/Bittensor order: same FRAME system pallet
-    // So we count how many known calls appear before remark in the metadata slice
-    const systemSection = hex.slice(systemPos, nextPalletPos);
-
-    // Call names in typical FRAME system pallet order:
-    const systemCalls = ['fill_block','remark','set_heap_pages','set_code','set_code_without_checks',
-                         'set_storage','kill_storage','kill_prefix','remark_with_event'];
-    // Find which index 'remark' occupies
-    let callIdx = 0;
-    let searchFrom = 0;
-    for(let ci=0; ci<systemCalls.length; ci++){
-      const cname = systemCalls[ci];
-      if(cname === 'remark'){ callIdx = ci; break; }
-      const cnameHex = strToHex(cname);
-      const clenHex  = compactLenHex(cname.length);
-      if(!clenHex) continue;
-      const cpat = clenHex + cnameHex;
-      const cpos = systemSection.indexOf(cpat, searchFrom);
-      if(cpos >= 0) searchFrom = cpos + cpat.length;
-    }
-
-    // Now find actual pallet index for "System" from metadata
-    // In metadata v14, each pallet entry ends with the pallet's runtime index byte
-    // Simpler: scan for the pallet index byte right before or after pallet definition
-    // For most Substrate chains, System pallet index = 0
-    // Verify by looking at the 2 bytes before systemPattern in metadata
-    // Usually metadata encodes pallet index as a single u8 right in the struct
-
-    // Default: System pallet = 0x00, remark call = detected index
-    // Standard FRAME order: fill_block(0), remark(1), set_heap_pages(2)
-    // SubWallet showed set_heap_pages at 0x01 in earlier version
-    // Our metadata scan returns callIdx=1 for remark which is correct for standard FRAME
-    return { palletIdx: 0x00, callIdx: callIdx };
-
-  }catch(e){ return null; }
-} // { palletIdx, callIdx }
-
-/**
- * Validate call bytes against chain using payment_queryInfo (unsigned extrinsic probe).
- * If chain returns info → call index correct. If throws "invalid" → wrong index.
- */
-async function validateCallBytes(rpc, callBytes){
-  try{
-    const versionByte = new Uint8Array([0x04]);
-    const inner = new Uint8Array(1 + callBytes.length);
-    inner.set(versionByte); inner.set(callBytes, 1);
-    const lenPrefix = compactEncode(inner.length);
-    const full = new Uint8Array(lenPrefix.length + inner.length);
-    full.set(lenPrefix); full.set(inner, lenPrefix.length);
-    const unsignedHex = bytesToHex(full);
-    const info = await rpc.call('payment_queryInfo', [unsignedHex, null]);
-    return { valid: true, weight: info };
-  }catch(e){
-    const msg = e.message.toLowerCase();
-    return { valid: !msg.includes('invalid') && !msg.includes('unknown call'), error: e.message };
-  }
-}
-
-/**
- * Fetch chain metadata and scan the hex for the 'remark' call.
- * Substrate metadata v14/v15 stores pallet names + call names as UTF-8 strings.
- * We scan for the byte sequence of "remark" preceded by its length byte to find
- * the correct call offset, then back-calculate pallet and call indices.
- *
- * Fallback order:
- *   1. Metadata scan (most reliable)
- *   2. HTTP JSON-RPC call to state_call for rpc_methods list
- *   3. Known Subtensor/Bittensor-fork indices (0x00, 0x06)
- *   4. Standard Substrate indices (0x00, 0x01)
- */
-async function detectRemarkCallIndex(rpc){
-  if(_cachedCallIndex) return _cachedCallIndex;
-
-  // Try to fetch and parse metadata directly
-  try{
-    addLog('⛓ Fetching chain metadata to detect remark call index…','info');
-    const metaHex = await rpc.call('state_getMetadata',[]);
-    if(metaHex && metaHex.length > 100){
-      const result = parseMetadataForRemarkIndex(metaHex);
-      if(result){
-        addLog('✅ system.remark detected: [0x'+result.palletIdx.toString(16).padStart(2,'0')+', 0x'+result.callIdx.toString(16).padStart(2,'0')+']','ok');
-        _cachedCallIndex = result;
-        return result;
-      }
-    }
-  }catch(e){
-    addLog('Metadata fetch failed: '+e.message,'warn');
-  }
-
-  // Fallback: probe the chain by trying each call index 0-8 with payment_queryInfo
-  // A valid remark call is one the chain accepts (no "invalid call" error)
-  // We test with a minimal remark payload "mm" to keep it small
-  addLog('Probing chain for correct system.remark call index…','warn');
-  const testRemark = 'mm';
-  const testText = new TextEncoder().encode(testRemark);
-  for(let ci = 0; ci <= 8; ci++){
-    const testCallBytes = new Uint8Array(2 + 1 + testText.length); // [pallet, call, compact_len, ...text]
-    testCallBytes[0] = 0x00; // System pallet
-    testCallBytes[1] = ci;
-    testCallBytes[2] = testText.length << 2; // compact encode for small len
-    testCallBytes.set(testText, 3);
-    try{
-      const probe = await validateCallBytes(rpc, testCallBytes.slice(0, 2 + 1 + testText.length));
-      if(probe.valid){
-        addLog('✅ system.remark call index found: [0x00, 0x'+ci.toString(16)+']','ok');
-        _cachedCallIndex = { palletIdx: 0x00, callIdx: ci };
-        return _cachedCallIndex;
-      }
-    }catch(e){ /* try next */ }
-  }
-
-  // Ultimate fallback: standard FRAME [0x00, 0x01]
-  addLog('Could not detect call index — using standard FRAME [0x00, 0x01]','warn');
-  _cachedCallIndex = { palletIdx: 0x00, callIdx: 0x01 };
-  return _cachedCallIndex;
-}
-
-
-// Build system.remark call bytes using detected call indices
-function buildRemarkCall(remarkStr, callIndex){
-  const textBytes = new TextEncoder().encode(remarkStr);
-  const lenPrefix = compactEncode(textBytes.length);
-  // callIndex is [palletIdx, callIdx] Uint8Array
-  const callBytes = new Uint8Array(callIndex.length + lenPrefix.length + textBytes.length);
-  callBytes.set(callIndex); callBytes.set(lenPrefix, 2); callBytes.set(textBytes, 2+lenPrefix.length);
-  return callBytes;
-}
-
-// Main: sign + build + submit a remark extrinsic
-// Shows proper TRANSACTION popup in BOTH Talisman and SubWallet
-async function sendSignedRemark(rpc, signer, address, remarkStr){
-  // ── Step 1: Fetch all chain state in parallel
-  const [header, genesisHash, rtVersion, nonce] = await Promise.all([
-    rpc.call('chain_getHeader',[]),
-    rpc.call('chain_getBlockHash',[0]),
-    rpc.call('state_getRuntimeVersion',[]),
-    rpc.call('system_accountNextIndex',[address]),
-  ]);
-
-  const blockNum  = parseInt(header.number, 16);
-  const blockHash = await rpc.call('chain_getBlockHash',[blockNum]);
-
-  // BOTH Talisman and SubWallet require plain Numbers (not hex strings)
-  const specVersion  = Number(rtVersion.specVersion);
-  const transVersion = Number(rtVersion.transactionVersion);
-
-  // ── Step 2: Detect correct call index from chain metadata, then build call bytes
-  // Konnex testnet is Subtensor-based: system.remark = [0x00, 0x06] (NOT 0x01 which is setHeapPages)
-  const callIdx = await detectRemarkCallIndex(rpc);
-  const callIndexBytes = new Uint8Array([callIdx.palletIdx, callIdx.callIdx]);
-  const callBytes = buildRemarkCall(remarkStr, callIndexBytes);
-  const callHex   = bytesToHex(callBytes);
-  addLog('Using call index [0x'+callIdx.palletIdx.toString(16).padStart(2,'0')+', 0x'+callIdx.callIdx.toString(16).padStart(2,'0')+'] for system.remark','info');
-
-  // ── Step 3: Detect wallet type for tailored payload
-  // Detect via both WALLET.name AND injectedWeb3 keys (mobile DApp browser detection)
-  const walletNameLower = (WALLET.name || '').toLowerCase();
-  const injectedKeys = Object.keys(window.injectedWeb3 || {}).map(k=>k.toLowerCase());
-  const isTalisman = walletNameLower.includes('talisman') || injectedKeys.some(k=>k.includes('talisman'));
-  const isSubWallet = walletNameLower.includes('subwallet') || walletNameLower.includes('sub wallet') || injectedKeys.some(k=>k.includes('subwallet'));
-
-  // Standard signed extensions — use chain's own list (includes CheckMetadataHash if present)
-  const signedExtensions = rtVersion.signedExtensions || [
-    'CheckNonZeroSender','CheckSpecVersion','CheckTxVersion',
-    'CheckGenesis','CheckMortality','CheckNonce','CheckWeight',
-    'ChargeTransactionPayment',
-  ];
-
-  // Detect if chain has CheckMetadataHash extension (Talisman v3.6.1+ chains like Konnex/Subtensor)
-  const hasCheckMetadataHash = signedExtensions.includes('CheckMetadataHash');
-  if(hasCheckMetadataHash){
-    addLog('ℹ️ CheckMetadataHash extension detected — applying mode=0x00 fix','info');
-  }
-
-  // ── Step 4: Build mortal era
-  // period=64 blocks, era encoded as little-endian u16
-  // low_byte = (phase << 4) | (log2(period) - 1)  =  (phase << 4) | 5
-  // high_byte = phase >> 4
-  const eraPeriod  = 64;
-  const eraPhase   = blockNum % eraPeriod;
-  const eraLow  = ((eraPhase << 4) | 5) & 0xff;
-  const eraHigh = (eraPhase >> 4) & 0xff;
-  const mortalEra  = '0x' + eraLow.toString(16).padStart(2,'0') + eraHigh.toString(16).padStart(2,'0');
-
-  // ── Step 5: Build signing payload
-  //
-  // DEFINITIVE FIX for Talisman v3.6.1 + CheckMetadataHash:
-  //
-  // The chain's signedExtensions list includes "CheckMetadataHash".
-  // When Talisman sees this, it expects the payload to include `assetId` (or `mode`) field
-  // so it knows whether to include/verify the metadata hash.
-  // We pass mode=0 (disabled) via the `assetId` field (Talisman reads this as the mode byte).
-  //
-  // Additionally we pass `withSignedTransaction: true` — wallets that support it
-  // (SubWallet, newer Talisman builds) will return the FULL extrinsic directly.
-  // Wallets that ignore it return only a signature → we fall to manual build (Path B),
-  // but Path B now correctly appends the CheckMetadataHash mode byte (0x00).
-  const payload = {
-    address,
-    blockHash,
-    blockNumber        : blockNum,
-    era                : mortalEra,
-    genesisHash,
-    method             : callHex,
-    nonce              : Number(nonce),
-    specVersion,
-    tip                : 0,
-    transactionVersion : transVersion,
-    version            : 4,
-    signedExtensions,
-    withSignedTransaction: true,
-    // CheckMetadataHash fix: mode=0 means "no metadata hash verification"
-    // Talisman reads this from `assetId` field when extension is present
-    ...(hasCheckMetadataHash ? { assetId: null, mode: 0 } : {}),
-  };
-
-  addLog('⛓ ' + WALLET.name + ' mein transaction approve karo…','info');
-
-  // ── Step 6: Sign
-  let signed;
-  try{
-    signed = await signer.signPayload(payload);
-  }catch(e){
-    const msg = e.message || '';
-    const userCancelled = msg.toLowerCase().includes('cancel') || msg.toLowerCase().includes('reject') ||
-                          msg.includes('denied') || msg.includes('dismissed');
-    if(userCancelled) throw new Error('Transaction cancel kar diya — dobara try karo aur Approve dabao');
-    // Retry without withSignedTransaction (older wallets)
-    addLog('withSignedTransaction retry without flag…','warn');
-    const { withSignedTransaction: _w, ...payloadNoWST } = payload;
-    try{ signed = await signer.signPayload(payloadNoWST); }
-    catch(e2){ throw new Error('Signing failed: ' + e2.message); }
-  }
-
-  // ── Step 7: Submit
-  // Path A: wallet returned full signed extrinsic (withSignedTransaction worked)
-  if(signed.signedTransaction){
-    addLog('✅ Wallet ne full extrinsic diya — broadcasting…','info');
-    try{
-      const txHash = await rpc.call('author_submitExtrinsic',[signed.signedTransaction]);
-      addLog('✅ Transaction submitted! Hash: ' + (txHash||'').slice(0,20),'ok');
-      return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
-    }catch(submitErr){
-      throw new Error('Transaction failed: ' + submitErr.message);
-    }
-  }
-
-  // Path B: wallet returned only signature — manual extrinsic build
-  // CRITICAL: append CheckMetadataHash mode byte (0x00) to signed extensions area
-  // Without this extra byte, chain rejects with "wasm unreachable" / "bad proof"
-  addLog('Manual extrinsic build (Path B)…','info');
-  const signature = signed.signature;
-  if(!signature) throw new Error('Wallet se signature nahi mila');
-
-  let pubkey32;
-  try{ pubkey32 = ss58Decode(address); }
-  catch(e){ pubkey32 = hexToBytes(address.replace('0x','')).slice(0,32); }
-
-  // sr25519=0x01 (64 bytes = 128 hex chars), ecdsa=0x02 (65 bytes = 130 hex chars)
-  const sigHex = signature.startsWith('0x') ? signature.slice(2) : signature;
-  const sigType = sigHex.length === 130 ? 0x02 : 0x01;
-
-  // Build call bytes with CheckMetadataHash mode byte appended AFTER tip
-  // Extrinsic signed extensions order: era + nonce + tip [+ metadataHash_mode if present]
-  // We build via the existing helper but patch in the extra byte in buildFullSignedExtrinsicV2
-  const extrinsicHex = buildSignedExtrinsicWithMetaHash(
-    pubkey32, signature, sigType, Number(nonce), mortalEra, 0, callBytes, hasCheckMetadataHash
-  );
-
-  addLog('⛓ Broadcasting manually-built extrinsic…','info');
-  try{
-    const txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex]);
-    return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
-  }catch(submitErr){
-    throw new Error('Transaction failed: ' + submitErr.message);
-  }
-}
-
-// Global RPC instance
-let rpcClient = null;
 
 async function initChain(){
   if(chainConnecting || chainApi) return chainApi;
   chainConnecting = true;
+
   const statusEl = document.getElementById('chain-status');
   const subnetEl = document.getElementById('subnet-chain-status');
-  statusEl.className='chain-status connecting';
-  statusEl.textContent='Connecting...';
-  addLog('Mode: Native WebSocket JSON-RPC (no CDN bundle needed)','info');
+  statusEl.className = 'chain-status connecting';
+  statusEl.textContent = 'Connecting...';
+  addLog('Mode: @polkadot/api CDN (auto CheckMetadataHash + SCALE)','info');
+
+  // Wait for CDN bundle
+  let lib;
+  try{
+    lib = await waitForPolkadotApi();
+    addLog('✅ @polkadot/api loaded from CDN','ok');
+  }catch(e){
+    addLog('❌ @polkadot/api CDN load failed: ' + e.message,'err');
+    chainConnecting = false;
+    statusEl.className = 'chain-status error';
+    statusEl.textContent = 'CDN Error';
+    if(subnetEl) subnetEl.innerHTML = '<span class="badge bg-red">CDN Failed</span>';
+    return null;
+  }
+
+  const { ApiPromise, WsProvider } = lib;
 
   for(const wsUrl of KONNEX_WS_ENDPOINTS){
     try{
-      addLog('Trying RPC: '+wsUrl,'info');
-      const rpc = new SubstrateRPC();
-      await rpc.connect(wsUrl);
-      const chain = await rpc.call('system_chain',[]);
-      addLog('⛓ Connected: '+chain,'ok');
+      addLog('Trying RPC: ' + wsUrl,'info');
+      const provider = new WsProvider(wsUrl, 5000); // 5s reconnect
+      const api = await ApiPromise.create({
+        provider,
+        throwOnConnect: true,
+        throwOnUnknown: false,
+      });
 
-      rpcClient = rpc;
-      chainApi  = rpc; // chainApi points to our native client
+      await api.isReady;
+      const chain = (await api.rpc.system.chain()).toString();
+      addLog('⛓ Connected via @polkadot/api: ' + chain,'ok');
+
+      chainApi = api;
       chainConnecting = false;
 
-      statusEl.className='chain-status connected';
-      statusEl.textContent='Chain: '+chain;
-      if(subnetEl) subnetEl.innerHTML='<span class="badge bg-green">Connected</span>';
-
-      // Probe metadata in background to cache correct call index
-      probeChainCallIndex(rpc);
+      statusEl.className = 'chain-status connected';
+      statusEl.textContent = 'Chain: ' + chain;
+      if(subnetEl) subnetEl.innerHTML = '<span class="badge bg-green">Connected</span>';
 
       // Subscribe to new heads for block number
-      rpc.subscribe('chain_subscribeNewHeads',[], header=>{
-        if(!header) return;
-        currentBlock = parseInt(header.number,16);
+      await api.rpc.chain.subscribeNewHeads(header => {
+        currentBlock = header.number.toNumber();
         blockNum = currentBlock;
         const el = document.getElementById('s-block');
         if(el) el.textContent = currentBlock.toLocaleString();
       });
 
-      return rpc;
+      return api;
     }catch(e){
-      addLog('WSS failed ('+wsUrl+'): '+e.message,'warn');
+      addLog('WSS failed (' + wsUrl + '): ' + e.message,'warn');
     }
   }
 
   chainConnecting = false;
-  statusEl.className='chain-status error';
-  statusEl.textContent='Offline';
-  if(subnetEl) subnetEl.innerHTML='<span class="badge bg-red">Cannot Connect</span>';
+  statusEl.className = 'chain-status error';
+  statusEl.textContent = 'Offline';
+  if(subnetEl) subnetEl.innerHTML = '<span class="badge bg-red">Cannot Connect</span>';
   addLog('⚠️ All RPC endpoints failed — local-state mode active','warn');
   return null;
 }
@@ -1409,13 +897,84 @@ async function initChain(){
 // ════════════════════════════════════════════
 
 /**
- * memorymesh pallet Konnex chain par exist nahi karta.
- * Hum system.remarkWithEvent use karte hain — yeh har Substrate chain par available hai.
- * MemoryMesh data JSON ke roop mein remark mein encode ho ke REAL onchain tx ke saath jata hai.
- * Returns { txHash, blockHash, blockNumber, local }
+ * @polkadot/api se system.remark transaction sign aur submit karo.
+ * Api automatically handles:
+ *   ✅ CheckMetadataHash extension (mode byte automatic)
+ *   ✅ Correct nonce, era, tip
+ *   ✅ SCALE encoding
+ *   ✅ Talisman + SubWallet signer injection
+ *
+ * Returns { txHash, blockNumber, local: false }
+ */
+async function sendExtrinsicViaApi(api, signer, address, palletMethod, remarkData, logLabel){
+  const remarkPayload = JSON.stringify({
+    p:'MM/v1', m:palletMethod, d:remarkData||{}, t:Math.floor(Date.now()/1000)
+  });
+  const remark = remarkPayload.length > 400 ? remarkPayload.slice(0,397)+'...' : remarkPayload;
+
+  addLog(`⛓ Signing: ${logLabel}… (wallet mein approve karo)`,'info');
+
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    let unsub;
+
+    api.tx.system.remark(remark)
+      .signAndSend(address, { signer }, (result) => {
+        const { status, dispatchError, txHash } = result;
+
+        if(dispatchError){
+          if(unsub) unsub();
+          if(resolved) return;
+          resolved = true;
+          if(dispatchError.isModule){
+            try{
+              const decoded = api.registry.findMetaError(dispatchError.asModule);
+              reject(new Error(`Chain error: ${decoded.section}.${decoded.name} — ${decoded.docs.join(' ')}`));
+            }catch(e){
+              reject(new Error('Transaction dispatch error: ' + dispatchError.toString()));
+            }
+          } else {
+            reject(new Error('Transaction error: ' + dispatchError.toString()));
+          }
+          return;
+        }
+
+        if(status.isInBlock){
+          if(unsub) unsub();
+          if(resolved) return;
+          resolved = true;
+          const blockHash = status.asInBlock.toString();
+          const txStr = txHash.toString();
+          addLog(`✅ [⛓ ONCHAIN] Tx: ${txStr.slice(0,20)}… | In Block: ${blockHash.slice(0,16)}…`,'ok');
+          // Get block number from hash
+          api.rpc.chain.getHeader(status.asInBlock).then(header => {
+            resolve({ txHash: txStr, blockNumber: header.number.toNumber(), local: false });
+          }).catch(() => {
+            resolve({ txHash: txStr, blockNumber: blockNum, local: false });
+          });
+        }
+      })
+      .then(u => { unsub = u; })
+      .catch(e => {
+        if(resolved) return;
+        resolved = true;
+        const msg = e.message || '';
+        const cancelled = msg.toLowerCase().includes('cancel') || msg.toLowerCase().includes('reject') ||
+                          msg.includes('denied') || msg.includes('dismissed') || msg.includes('1010');
+        reject(new Error(cancelled
+          ? 'Transaction cancel kar diya — wallet mein Approve dabao'
+          : 'Signing failed: ' + msg
+        ));
+      });
+  });
+}
+
+/**
+ * Main sendExtrinsic — wallet + chain check, phir @polkadot/api se tx send.
+ * Returns { txHash, blockNumber, local }
  */
 async function sendExtrinsic(palletMethod, args, logLabel, remarkData){
-  // ── CASE 1: No wallet → HARD BLOCK — nothing saves locally
+  // ── CASE 1: No wallet → HARD BLOCK
   if(!WALLET.connected || !WALLET.signer || WALLET.readOnly){
     const msg = !WALLET.connected
       ? 'Wallet connect karo pehle — koi bhi action wallet ke bina nahi hoga'
@@ -1426,42 +985,31 @@ async function sendExtrinsic(palletMethod, args, logLabel, remarkData){
     throw new Error(msg);
   }
 
-  // ── CASE 2: Wallet hai — chain offline to reconnect try karo
-  if(!rpcClient || !rpcClient.connected){
+  // ── CASE 2: Chain offline → reconnect
+  if(!chainApi){
     addLog('Chain offline — reconnect try kar raha hoon…','warn');
     await initChain();
-    if(!rpcClient || !rpcClient.connected){
+    if(!chainApi){
       throw new Error('Konnex Testnet se connect nahi ho pa raha — network check karo aur dobara try karo');
     }
   }
 
-  // ── CASE 3: Signer + RPC both available → REAL TX with proper popup ✅
+  // ── CASE 3: @polkadot/api signAndSend
   try{
-    const remarkPayload = JSON.stringify({
-      p:'MM/v1', m:palletMethod, d:remarkData||{}, t:Math.floor(Date.now()/1000)
-    });
-    const remark = remarkPayload.length > 400 ? remarkPayload.slice(0,397)+'...' : remarkPayload;
-    addLog(`⛓ Signing: ${logLabel}… (wallet mein approve karo)`,'info');
-    const result = await sendSignedRemark(rpcClient, WALLET.signer, WALLET.address, remark);
-    const txStr = typeof result.txHash==='string' ? result.txHash : result.txHash?.toString?.() || hash(logLabel+Date.now());
-    addLog(`✅ [⛓ ONCHAIN] Tx: ${txStr.slice(0,20)}… | Block: ${result.blockNumber}`,'ok');
-    return { txHash: txStr, blockNumber: result.blockNumber, local: false };
+    return await sendExtrinsicViaApi(chainApi, WALLET.signer, WALLET.address, palletMethod, remarkData, logLabel);
   }catch(e){
-    // User rejected or wallet error — propagate UP, do NOT save locally
     addLog(`❌ Tx failed/rejected: ${e.message}`,'err');
-    throw new Error(e.message.includes('Rejected') || e.message.includes('cancel') || e.message.includes('denied')
-      ? 'Transaction reject kar diya — wallet mein Approve dabao'
-      : `Transaction failed: ${e.message}`);
+    throw new Error(e.message);
   }
 }
 
 /**
- * Query onchain storage. Returns null if chain offline.
+ * Query onchain storage via @polkadot/api. Returns null if chain offline.
  */
 async function queryChain(path, args=[]){
-  if(!rpcClient || !rpcClient.connected) return null;
+  if(!chainApi) return null;
   try{
-    const result = await rpcClient.call('state_getStorage', args);
+    const result = await chainApi.rpc.state.getStorage(...args);
     return result;
   }catch(e){
     return null;
@@ -1862,23 +1410,17 @@ async function setWalletConnected(address, name, signer=null, readOnly=false){
   document.getElementById('t-poster').value = address;
   document.getElementById('faucet-addr').value = address;
 
-  // Fetch balance from chain
+  // Fetch balance from chain via @polkadot/api
   WALLET.balance = '…';
   document.getElementById('info-balance').textContent = '…';
   try{
     const api = await initChain();
-    if(rpcClient && rpcClient.connected){
+    if(api){
       try{
-        // system_account via state_getStorage — or use system_accountNextIndex as proxy
-        // Use a direct RPC call for account info
-        const result = await rpcClient.call('system_account',[address]).catch(()=>null);
-        if(result && result.data){
-          const free = BigInt(result.data.free || 0);
-          const divisor = BigInt(10**TOKEN_DECIMALS);
-          WALLET.balance = (Number(free/divisor)).toFixed(4);
-        } else {
-          WALLET.balance = '?';
-        }
+        const acct = await api.query.system.account(address);
+        const free = acct.data.free.toBigInt();
+        const divisor = BigInt(10**TOKEN_DECIMALS);
+        WALLET.balance = (Number(free/divisor)).toFixed(4);
       }catch(e){ WALLET.balance = '?'; }
     }
   }catch(e){ WALLET.balance = '?'; }
@@ -2366,10 +1908,10 @@ async function runSimulation(){
     document.getElementById('sim-log').innerHTML='<div class="log-line log-err">🚫 Wallet connect nahi hai — SubWallet ya Talisman se connect karo phir simulator chalao.</div>';
     return;
   }
-  if(!rpcClient || !rpcClient.connected){
+  if(!chainApi){
     addLog('Chain se connect ho raha hoon…','info');
     await initChain();
-    if(!rpcClient || !rpcClient.connected){
+    if(!chainApi){
       toast('Konnex Testnet se connect nahi ho pa raha','error');
       document.getElementById('sim-log').innerHTML='<div class="log-line log-err">❌ Konnex Testnet offline — network check karo aur dobara try karo.</div>';
       return;

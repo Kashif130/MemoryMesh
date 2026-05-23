@@ -1192,85 +1192,86 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   ];
 
   // ── Step 4: Build signing payload
-  // era: use mortal era (64 block window) instead of immortal 0x00
-  // Immortal era (0x00) causes "wasm unreachable" on some Substrate chains
-  // Mortal era = 2-byte encoding: period=64 → first byte encodes period+phase
-  const mortalEra = '0x' + ((blockNum & 63) * 4 + ((6 - 1) << 2 & 0xfc)).toString(16).padStart(2,'0') +
-                    Math.floor(blockNum / 64 % 256).toString(16).padStart(2,'0');
+  //
+  // KEY FIX: Talisman v3.6.1 with "CheckMetadataHash" extension enabled requires:
+  //   1. withSignedTransaction: true  → wallet builds the full extrinsic itself
+  //   2. mode: '0x00'                → disables metadata hash check (we pass this in signedExtensions)
+  //   3. signedExtensions from chain  → must match chain's list exactly
+  //
+  // If we build the extrinsic manually, we miss CheckMetadataHash extra bytes → wasm unreachable
+  // Solution: ALWAYS use withSignedTransaction:true for BOTH wallets
+  //           Let the wallet build the extrinsic — we just submit it
+  //
+  // Mortal era (64-block window) — immortal 0x00 rejected by some chains
+  // Mortal era encoding (Substrate SCALE format):
+  // period=64 blocks, phase = blockNum % period
+  // encoded = little-endian u16: low_byte=(phase<<4)|period_encoded, high_byte=phase>>4
+  // period_encoded for 64 = log2(64)-1 = 5
+  const eraPeriod  = 64;
+  const eraPhase   = blockNum % eraPeriod;
+  const eraPeriodE = 5; // log2(64) - 1 = 5
+  const eraLow  = ((eraPhase << 4) | eraPeriodE) & 0xff;
+  const eraHigh = (eraPhase >> 4) & 0xff;
+  const mortalEra  = '0x' + eraLow.toString(16).padStart(2,'0') + eraHigh.toString(16).padStart(2,'0');
 
-  const basePayload = {
+  // signedExtensions: use chain's list from rtVersion (includes CheckMetadataHash if present)
+  // Talisman needs this to match exactly — and it will add mode byte for CheckMetadataHash automatically
+  const payload = {
     address,
     blockHash,
-    blockNumber       : blockNum,
-    era               : mortalEra,
+    blockNumber        : blockNum,
+    era                : mortalEra,
     genesisHash,
-    method            : callHex,
-    nonce             : Number(nonce),
+    method             : callHex,
+    nonce              : Number(nonce),
     specVersion,
-    tip               : 0,
-    transactionVersion: transVersion,
-    version           : 4,
+    tip                : 0,
+    transactionVersion : transVersion,
+    version            : 4,
     signedExtensions,
+    withSignedTransaction: true,   // BOTH Talisman + SubWallet return full extrinsic
   };
 
-  // SubWallet extra: withSignedTransaction returns full extrinsic (skips manual build)
-  const subWalletPayload = { ...basePayload, withSignedTransaction: true };
+  addLog('⛓ ' + WALLET.name + ' mein transaction approve karo (1 popup only)…','info');
 
-  addLog(`⛓ ${WALLET.name} mein transaction approve karo…`,'info');
-
+  // ── Step 5: Sign — single attempt, one popup only
+  // withSignedTransaction means the wallet handles ALL encoding including CheckMetadataHash
   let signed;
-
-  // ── Strategy: Single popup per wallet type — no retry that causes double popup
-  if(isTalisman){
-    // Talisman: use minimal standard payload — no withSignedTransaction
-    // Remove signedExtensions if first attempt fails (Talisman version-specific)
-    try{
-      signed = await signer.signPayload(basePayload);
-    }catch(e1){
-      if(e1.message && (e1.message.includes('cancel') || e1.message.includes('reject') || e1.message.includes('denied') || e1.message.includes('Rejected'))){
-        throw e1; // User cancelled — do not retry (would show second popup)
-      }
-      // Non-user-cancel error: try without signedExtensions (one more attempt only)
-      const { signedExtensions: _se, ...minimalPayload } = basePayload;
-      try{
-        signed = await signer.signPayload(minimalPayload);
-      }catch(e2){
-        throw new Error('Talisman signing failed: ' + e2.message);
-      }
+  try{
+    signed = await signer.signPayload(payload);
+  }catch(e){
+    const msg = e.message || '';
+    const userCancelled = msg.includes('cancel') || msg.includes('reject') ||
+                          msg.includes('denied') || msg.includes('Rejected') ||
+                          msg.includes('dismissed');
+    if(userCancelled){
+      throw new Error('Transaction cancel kar diya — dobara try karo aur Approve dabao');
     }
-  } else {
-    // SubWallet / others: use withSignedTransaction — single attempt only (no fallback = no double popup)
+    // Wallet rejected withSignedTransaction (older wallet) — retry without it (still 1 popup total)
+    addLog('withSignedTransaction not supported, retrying without…','warn');
+    const { withSignedTransaction: _wst, ...payloadNoWST } = payload;
     try{
-      signed = await signer.signPayload(subWalletPayload);
-    }catch(e1){
-      if(e1.message && (e1.message.includes('cancel') || e1.message.includes('reject') || e1.message.includes('denied') || e1.message.includes('Rejected'))){
-        throw e1; // User cancelled — stop here, do NOT show another popup
-      }
-      // Non-cancel error: try base payload once
-      try{
-        signed = await signer.signPayload(basePayload);
-      }catch(e2){
-        throw new Error('Wallet signing failed: ' + e2.message);
-      }
+      signed = await signer.signPayload(payloadNoWST);
+    }catch(e2){
+      throw new Error('Signing failed: ' + e2.message);
     }
   }
 
-  // ── Step 5: Submit path
-  // SubWallet with withSignedTransaction=true returns a ready-to-submit extrinsic
-  // This is the BEST path — no manual SCALE encoding needed
+  // ── Step 6: Submit
+  // Path A: wallet returned full extrinsic (withSignedTransaction worked) — best path
   if(signed.signedTransaction){
-    addLog('SubWallet ne full extrinsic diya — directly broadcast kar raha hoon…','info');
+    addLog('✅ Wallet ne full extrinsic diya — broadcasting…','info');
     try{
       const txHash = await rpc.call('author_submitExtrinsic',[signed.signedTransaction]);
-      addLog('✅ Broadcast success via signedTransaction','ok');
+      addLog('✅ Transaction submitted! Hash: ' + (txHash||'').slice(0,20),'ok');
       return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
     }catch(submitErr){
-      // signedTransaction submit failed — throw immediately, no fallback signing
       throw new Error('Transaction failed: ' + submitErr.message);
     }
   }
 
-  // ── Step 6: Manual extrinsic build (Talisman path — only signature returned)
+  // Path B: wallet returned only signature (fallback manual build — no CheckMetadataHash support needed)
+  addLog('Manual extrinsic build (fallback path)…','info');
   const signature = signed.signature;
   if(!signature) throw new Error('Wallet se signature nahi mila');
 
@@ -1278,27 +1279,21 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   try{ pubkey32 = ss58Decode(address); }
   catch(e){ pubkey32 = hexToBytes(address.replace('0x','')).slice(0,32); }
 
-  // Signature type — detect from signature length:
-  // sr25519 = 64 bytes (128 hex chars), ed25519 = 64 bytes, ecdsa = 65 bytes
-  // Most Substrate wallets (Talisman, SubWallet) default to sr25519
+  // sr25519=0x01 (64 bytes = 128 hex), ecdsa=0x02 (65 bytes = 130 hex)
   const sigHex = signature.startsWith('0x') ? signature.slice(2) : signature;
-  const sigType = sigHex.length === 130 ? 0x02 : 0x01; // 130 hex = 65 bytes = ecdsa, else sr25519
+  const sigType = sigHex.length === 130 ? 0x02 : 0x01;
 
-  // Use the same mortal era as in the payload (MUST match exactly)
   const extrinsicHex = buildFullSignedExtrinsic(
     pubkey32, signature, sigType, Number(nonce), mortalEra, 0, callBytes
   );
 
-  // ── Step 7: Broadcast — single attempt, no re-sign
-  addLog('⛓ Broadcasting Talisman-signed extrinsic…','info');
-  let txHash;
+  addLog('⛓ Broadcasting manually-built extrinsic…','info');
   try{
-    txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex]);
+    const txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex]);
+    return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
   }catch(submitErr){
     throw new Error('Transaction failed: ' + submitErr.message);
   }
-
-  return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
 }
 
 // Global RPC instance

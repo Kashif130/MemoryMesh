@@ -952,6 +952,56 @@ function buildFullSignedExtrinsic(pubkey32, signature65bytes, sigType, nonce, er
 }
 
 // ════════════════════════════════════════════
+//  CHECKSIGNED EXTRINSIC WITH CHECKMETADATAHASH SUPPORT
+//  Same as buildFullSignedExtrinsic but appends mode byte (0x00)
+//  after tip when CheckMetadataHash extension is present on chain.
+//
+//  Substrate extrinsic signed area (v4):
+//  [MultiAddr(33)] [SigType(1)] [Sig(64/65)] [Era] [Nonce(compact)] [Tip(compact)]
+//  [CheckMetadataHash.mode(1)] ← THIS byte is what was missing
+//  [call bytes]
+//
+//  Without this byte, chain's WASM runtime hits unreachable() during decode → rejected.
+// ════════════════════════════════════════════
+function buildSignedExtrinsicWithMetaHash(pubkey32, signature, sigType, nonce, era, tip, callBytes, hasMetaHash){
+  const addrBytes = new Uint8Array(33);
+  addrBytes[0] = 0x00; // MultiAddress::Id
+  addrBytes.set(pubkey32, 1);
+
+  const nonceCompact = compactEncode(nonce);
+  const tipCompact   = compactEncode(tip);
+  const eraBytes     = (era === '0x00') ? new Uint8Array([0x00]) : hexToBytes(era);
+  const sigTypeByte  = new Uint8Array([sigType]);
+  const sigBytes     = hexToBytes(typeof signature === 'string' ? signature : bytesToHex(signature));
+
+  // CheckMetadataHash.mode = 0x00 means "do not verify metadata hash"
+  // This is a SCALE Option<u8>: None=0x00. Without it, runtime panics.
+  const metaHashExtra = hasMetaHash ? new Uint8Array([0x00]) : new Uint8Array(0);
+
+  const bodyLen = addrBytes.length + sigTypeByte.length + sigBytes.length +
+                  eraBytes.length + nonceCompact.length + tipCompact.length +
+                  metaHashExtra.length + callBytes.length;
+  const body = new Uint8Array(bodyLen);
+  let off = 0;
+  const w = (arr)=>{ body.set(arr, off); off += arr.length; };
+  w(addrBytes); w(sigTypeByte); w(sigBytes);
+  w(eraBytes); w(nonceCompact); w(tipCompact);
+  w(metaHashExtra);   // ← the missing byte that caused wasm unreachable
+  w(callBytes);
+
+  // Version byte 0x84 = signed(0x80) | v4(0x04)
+  const inner = new Uint8Array(1 + body.length);
+  inner[0] = 0x84;
+  inner.set(body, 1);
+
+  const lenPrefix = compactEncode(inner.length);
+  const full = new Uint8Array(lenPrefix.length + inner.length);
+  full.set(lenPrefix); full.set(inner, lenPrefix.length);
+
+  return bytesToHex(full);
+}
+
+// ════════════════════════════════════════════
 //  METADATA-BASED CALL INDEX DETECTION
 //  Parses chain metadata hex to find exact
 //  pallet index + call index for system.remark
@@ -1183,39 +1233,42 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   const isTalisman = walletNameLower.includes('talisman') || injectedKeys.some(k=>k.includes('talisman'));
   const isSubWallet = walletNameLower.includes('subwallet') || walletNameLower.includes('sub wallet') || injectedKeys.some(k=>k.includes('subwallet'));
 
-  // Standard signed extensions — Talisman needs EXACT match with chain's list
-  // We use the chain's own list from rtVersion to guarantee compatibility
+  // Standard signed extensions — use chain's own list (includes CheckMetadataHash if present)
   const signedExtensions = rtVersion.signedExtensions || [
     'CheckNonZeroSender','CheckSpecVersion','CheckTxVersion',
     'CheckGenesis','CheckMortality','CheckNonce','CheckWeight',
     'ChargeTransactionPayment',
   ];
 
-  // ── Step 4: Build signing payload
-  //
-  // KEY FIX: Talisman v3.6.1 with "CheckMetadataHash" extension enabled requires:
-  //   1. withSignedTransaction: true  → wallet builds the full extrinsic itself
-  //   2. mode: '0x00'                → disables metadata hash check (we pass this in signedExtensions)
-  //   3. signedExtensions from chain  → must match chain's list exactly
-  //
-  // If we build the extrinsic manually, we miss CheckMetadataHash extra bytes → wasm unreachable
-  // Solution: ALWAYS use withSignedTransaction:true for BOTH wallets
-  //           Let the wallet build the extrinsic — we just submit it
-  //
-  // Mortal era (64-block window) — immortal 0x00 rejected by some chains
-  // Mortal era encoding (Substrate SCALE format):
-  // period=64 blocks, phase = blockNum % period
-  // encoded = little-endian u16: low_byte=(phase<<4)|period_encoded, high_byte=phase>>4
-  // period_encoded for 64 = log2(64)-1 = 5
+  // Detect if chain has CheckMetadataHash extension (Talisman v3.6.1+ chains like Konnex/Subtensor)
+  const hasCheckMetadataHash = signedExtensions.includes('CheckMetadataHash');
+  if(hasCheckMetadataHash){
+    addLog('ℹ️ CheckMetadataHash extension detected — applying mode=0x00 fix','info');
+  }
+
+  // ── Step 4: Build mortal era
+  // period=64 blocks, era encoded as little-endian u16
+  // low_byte = (phase << 4) | (log2(period) - 1)  =  (phase << 4) | 5
+  // high_byte = phase >> 4
   const eraPeriod  = 64;
   const eraPhase   = blockNum % eraPeriod;
-  const eraPeriodE = 5; // log2(64) - 1 = 5
-  const eraLow  = ((eraPhase << 4) | eraPeriodE) & 0xff;
+  const eraLow  = ((eraPhase << 4) | 5) & 0xff;
   const eraHigh = (eraPhase >> 4) & 0xff;
   const mortalEra  = '0x' + eraLow.toString(16).padStart(2,'0') + eraHigh.toString(16).padStart(2,'0');
 
-  // signedExtensions: use chain's list from rtVersion (includes CheckMetadataHash if present)
-  // Talisman needs this to match exactly — and it will add mode byte for CheckMetadataHash automatically
+  // ── Step 5: Build signing payload
+  //
+  // DEFINITIVE FIX for Talisman v3.6.1 + CheckMetadataHash:
+  //
+  // The chain's signedExtensions list includes "CheckMetadataHash".
+  // When Talisman sees this, it expects the payload to include `assetId` (or `mode`) field
+  // so it knows whether to include/verify the metadata hash.
+  // We pass mode=0 (disabled) via the `assetId` field (Talisman reads this as the mode byte).
+  //
+  // Additionally we pass `withSignedTransaction: true` — wallets that support it
+  // (SubWallet, newer Talisman builds) will return the FULL extrinsic directly.
+  // Wallets that ignore it return only a signature → we fall to manual build (Path B),
+  // but Path B now correctly appends the CheckMetadataHash mode byte (0x00).
   const payload = {
     address,
     blockHash,
@@ -1229,36 +1282,32 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
     transactionVersion : transVersion,
     version            : 4,
     signedExtensions,
-    withSignedTransaction: true,   // BOTH Talisman + SubWallet return full extrinsic
+    withSignedTransaction: true,
+    // CheckMetadataHash fix: mode=0 means "no metadata hash verification"
+    // Talisman reads this from `assetId` field when extension is present
+    ...(hasCheckMetadataHash ? { assetId: null, mode: 0 } : {}),
   };
 
-  addLog('⛓ ' + WALLET.name + ' mein transaction approve karo (1 popup only)…','info');
+  addLog('⛓ ' + WALLET.name + ' mein transaction approve karo…','info');
 
-  // ── Step 5: Sign — single attempt, one popup only
-  // withSignedTransaction means the wallet handles ALL encoding including CheckMetadataHash
+  // ── Step 6: Sign
   let signed;
   try{
     signed = await signer.signPayload(payload);
   }catch(e){
     const msg = e.message || '';
-    const userCancelled = msg.includes('cancel') || msg.includes('reject') ||
-                          msg.includes('denied') || msg.includes('Rejected') ||
-                          msg.includes('dismissed');
-    if(userCancelled){
-      throw new Error('Transaction cancel kar diya — dobara try karo aur Approve dabao');
-    }
-    // Wallet rejected withSignedTransaction (older wallet) — retry without it (still 1 popup total)
-    addLog('withSignedTransaction not supported, retrying without…','warn');
-    const { withSignedTransaction: _wst, ...payloadNoWST } = payload;
-    try{
-      signed = await signer.signPayload(payloadNoWST);
-    }catch(e2){
-      throw new Error('Signing failed: ' + e2.message);
-    }
+    const userCancelled = msg.toLowerCase().includes('cancel') || msg.toLowerCase().includes('reject') ||
+                          msg.includes('denied') || msg.includes('dismissed');
+    if(userCancelled) throw new Error('Transaction cancel kar diya — dobara try karo aur Approve dabao');
+    // Retry without withSignedTransaction (older wallets)
+    addLog('withSignedTransaction retry without flag…','warn');
+    const { withSignedTransaction: _w, ...payloadNoWST } = payload;
+    try{ signed = await signer.signPayload(payloadNoWST); }
+    catch(e2){ throw new Error('Signing failed: ' + e2.message); }
   }
 
-  // ── Step 6: Submit
-  // Path A: wallet returned full extrinsic (withSignedTransaction worked) — best path
+  // ── Step 7: Submit
+  // Path A: wallet returned full signed extrinsic (withSignedTransaction worked)
   if(signed.signedTransaction){
     addLog('✅ Wallet ne full extrinsic diya — broadcasting…','info');
     try{
@@ -1270,8 +1319,10 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
     }
   }
 
-  // Path B: wallet returned only signature (fallback manual build — no CheckMetadataHash support needed)
-  addLog('Manual extrinsic build (fallback path)…','info');
+  // Path B: wallet returned only signature — manual extrinsic build
+  // CRITICAL: append CheckMetadataHash mode byte (0x00) to signed extensions area
+  // Without this extra byte, chain rejects with "wasm unreachable" / "bad proof"
+  addLog('Manual extrinsic build (Path B)…','info');
   const signature = signed.signature;
   if(!signature) throw new Error('Wallet se signature nahi mila');
 
@@ -1279,12 +1330,15 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   try{ pubkey32 = ss58Decode(address); }
   catch(e){ pubkey32 = hexToBytes(address.replace('0x','')).slice(0,32); }
 
-  // sr25519=0x01 (64 bytes = 128 hex), ecdsa=0x02 (65 bytes = 130 hex)
+  // sr25519=0x01 (64 bytes = 128 hex chars), ecdsa=0x02 (65 bytes = 130 hex chars)
   const sigHex = signature.startsWith('0x') ? signature.slice(2) : signature;
   const sigType = sigHex.length === 130 ? 0x02 : 0x01;
 
-  const extrinsicHex = buildFullSignedExtrinsic(
-    pubkey32, signature, sigType, Number(nonce), mortalEra, 0, callBytes
+  // Build call bytes with CheckMetadataHash mode byte appended AFTER tip
+  // Extrinsic signed extensions order: era + nonce + tip [+ metadataHash_mode if present]
+  // We build via the existing helper but patch in the extra byte in buildFullSignedExtrinsicV2
+  const extrinsicHex = buildSignedExtrinsicWithMetaHash(
+    pubkey32, signature, sigType, Number(nonce), mortalEra, 0, callBytes, hasCheckMetadataHash
   );
 
   addLog('⛓ Broadcasting manually-built extrinsic…','info');

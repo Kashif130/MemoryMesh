@@ -9,9 +9,11 @@
 <title>MemoryMesh AI — Konnex Subnet (Onchain)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 
-<style>
 /* ═══════════ RESET & ROOT ═══════════ */
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
 :root{
@@ -708,11 +710,11 @@ select option{background:var(--card);}
     </div>
   </div>
   <div class="card">
-    <div class="section-title">Local Data Storage</div>
+    <div class="section-title">🔥 Firebase — Global Database</div>
     <div class="info-row"><div class="info-key">Robots</div><div class="info-val mono" id="storage-robots">—</div></div>
     <div class="info-row"><div class="info-key">Tasks</div><div class="info-val mono" id="storage-tasks">—</div></div>
     <div class="info-row"><div class="info-key">Memory Entries</div><div class="info-val mono" id="storage-memory">—</div></div>
-    <div class="info-row"><div class="info-key">Last Saved</div><div class="info-val mono" id="storage-saved">—</div></div>
+    <div class="info-row"><div class="info-key">Sync Status</div><div class="info-val mono" id="storage-saved">Connecting…</div></div>
     <div style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap;">
       <button class="btn btn-secondary" onclick="refreshStorageInfo()" style="font-size:.72rem;padding:.5rem 1rem;">🔄 Refresh Info</button>
       <button class="btn btn-danger" onclick="confirmClearDB()" style="font-size:.72rem;padding:.5rem 1rem;">🗑️ Clear All Local Data</button>
@@ -765,73 +767,184 @@ const DB = { robots:[], tasks:[], memory:[], reputation:{} };
 const WALLET = { connected:false, address:null, name:null, balance:null, signer:null, readOnly:false };
 
 // ════════════════════════════════════════════
-//  PERSISTENT STORAGE — window.storage API
-//  Saves DB across page refreshes
+//  FIREBASE — Global Persistent Database
+//  All users see same data, real-time sync
 // ════════════════════════════════════════════
-const STORAGE_KEY = 'memorymesh-db';
+const firebaseConfig = {
+  apiKey:            "AIzaSyBX4fm_SwoNONTX8_2aX2zQS0FZqwN67MI",
+  authDomain:        "memorymesh-ai-5c681.firebaseapp.com",
+  projectId:         "memorymesh-ai-5c681",
+  storageBucket:     "memorymesh-ai-5c681.firebasestorage.app",
+  messagingSenderId: "264672670518",
+  appId:             "1:264672670518:web:7ca5b93bc43c6d9127b997",
+  measurementId:     "G-FKMBQDNNK7"
+};
 
-async function persistDB(){
-  try{
-    await window.storage.set(STORAGE_KEY, JSON.stringify({
-      robots:     DB.robots,
-      tasks:      DB.tasks,
-      memory:     DB.memory,
-      reputation: DB.reputation,
-      savedAt:    new Date().toISOString(),
-    }));
-  }catch(e){
-    console.warn('[MemoryMesh] Storage save failed:', e.message);
-  }
+let _db = null;   // Firestore instance
+
+function getFS(){
+  if(_db) return _db;
+  if(!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+  _db = firebase.firestore();
+  // Enable offline persistence (works even if network drops briefly)
+  _db.enablePersistence({ synchronizeTabs: true }).catch(()=>{});
+  return _db;
 }
+
+// ── Write helpers ─────────────────────────
+
+async function fbSaveRobot(robot){
+  try{
+    await getFS().collection('robots').doc(robot.robot_id).set(robot);
+  }catch(e){ console.warn('fbSaveRobot:', e.message); }
+}
+
+async function fbSaveTask(task){
+  try{
+    await getFS().collection('tasks').doc(task.task_id).set(task);
+  }catch(e){ console.warn('fbSaveTask:', e.message); }
+}
+
+async function fbSaveMemory(entry){
+  try{
+    const id = entry.robot_id.slice(2,18) + '_' + entry.task_id.slice(2,18) + '_' + Date.now();
+    await getFS().collection('memory').doc(id).set(entry);
+  }catch(e){ console.warn('fbSaveMemory:', e.message); }
+}
+
+async function fbSaveReputation(robotId, rep){
+  try{
+    await getFS().collection('reputation').doc(robotId).set(rep);
+  }catch(e){ console.warn('fbSaveReputation:', e.message); }
+}
+
+async function fbUpdateTask(taskId, fields){
+  try{
+    await getFS().collection('tasks').doc(taskId).update(fields);
+    // Mirror in DB
+    const t = DB.tasks.find(x=>x.task_id===taskId);
+    if(t) Object.assign(t, fields);
+  }catch(e){ console.warn('fbUpdateTask:', e.message); }
+}
+
+// ── Load all data once ────────────────────
 
 async function loadDB(){
+  const fs = getFS();
+  addLog('🔥 Firebase se data load ho raha hai…','info');
   try{
-    const result = await window.storage.get(STORAGE_KEY);
-    if(result && result.value){
-      const saved = JSON.parse(result.value);
-      if(Array.isArray(saved.robots))     DB.robots     = saved.robots;
-      if(Array.isArray(saved.tasks))      DB.tasks      = saved.tasks;
-      if(Array.isArray(saved.memory))     DB.memory     = saved.memory;
-      if(saved.reputation && typeof saved.reputation === 'object') DB.reputation = saved.reputation;
-      addLog(`📦 Restored: ${DB.robots.length} robots · ${DB.tasks.length} tasks · ${DB.memory.length} memory entries`,'ok');
-      return true;
-    }
+    const [robotsSnap, tasksSnap, memSnap, repSnap] = await Promise.all([
+      fs.collection('robots').orderBy('registered_at','asc').get(),
+      fs.collection('tasks').orderBy('created_at','asc').get(),
+      fs.collection('memory').orderBy('executed_at','asc').get(),
+      fs.collection('reputation').get(),
+    ]);
+    DB.robots     = robotsSnap.docs.map(d => d.data());
+    DB.tasks      = tasksSnap.docs.map(d => d.data());
+    DB.memory     = memSnap.docs.map(d => d.data());
+    DB.reputation = {};
+    repSnap.docs.forEach(d => { DB.reputation[d.id] = d.data(); });
+    addLog(`✅ Firebase: ${DB.robots.length} robots · ${DB.tasks.length} tasks · ${DB.memory.length} memory entries`,'ok');
+    return true;
   }catch(e){
-    console.info('[MemoryMesh] No saved data:', e.message);
+    addLog('⚠️ Firebase load failed: '+e.message,'warn');
+    return false;
   }
-  return false;
 }
 
-async function clearDB(){
-  try{ await window.storage.delete(STORAGE_KEY); }catch(e){}
-  DB.robots=[]; DB.tasks=[]; DB.memory=[]; DB.reputation={};
-  addLog('🗑️ All local data cleared','warn');
+// ── Real-time listeners (global sync) ─────
+
+let _listenersAttached = false;
+function attachRealtimeListeners(){
+  if(_listenersAttached) return;
+  _listenersAttached = true;
+  const fs = getFS();
+
+  // Robots
+  fs.collection('robots').onSnapshot(snap=>{
+    snap.docChanges().forEach(change=>{
+      const d = change.doc.data();
+      if(change.type==='added'){
+        if(!DB.robots.find(r=>r.robot_id===d.robot_id)){
+          DB.robots.push(d);
+          if(!DB.reputation[d.robot_id])
+            DB.reputation[d.robot_id]={score:0,total_tasks:0,successful_tasks:0,last_updated:now()};
+        }
+      } else if(change.type==='modified'){
+        const i=DB.robots.findIndex(r=>r.robot_id===d.robot_id);
+        if(i>=0) DB.robots[i]=d;
+      } else if(change.type==='removed'){
+        DB.robots=DB.robots.filter(r=>r.robot_id!==d.robot_id);
+      }
+    });
+    renderOverview(); renderRobots();
+    refreshStorageInfo();
+  });
+
+  // Tasks
+  fs.collection('tasks').onSnapshot(snap=>{
+    snap.docChanges().forEach(change=>{
+      const d = change.doc.data();
+      if(change.type==='added'){
+        if(!DB.tasks.find(t=>t.task_id===d.task_id)) DB.tasks.push(d);
+      } else if(change.type==='modified'){
+        const i=DB.tasks.findIndex(t=>t.task_id===d.task_id);
+        if(i>=0) DB.tasks[i]=d;
+      } else if(change.type==='removed'){
+        DB.tasks=DB.tasks.filter(t=>t.task_id!==d.task_id);
+      }
+    });
+    renderOverview();
+  });
+
+  // Memory
+  fs.collection('memory').onSnapshot(snap=>{
+    snap.docChanges().forEach(change=>{
+      const d = change.doc.data();
+      if(change.type==='added'){
+        if(!DB.memory.find(m=>m.robot_id===d.robot_id&&m.task_id===d.task_id&&m.executed_at===d.executed_at))
+          DB.memory.push(d);
+      }
+    });
+    renderOverview();
+  });
+
+  // Reputation
+  fs.collection('reputation').onSnapshot(snap=>{
+    snap.docChanges().forEach(change=>{
+      DB.reputation[change.doc.id] = change.doc.data();
+    });
+    renderLeaderboard(); renderOverview();
+    refreshStorageInfo();
+  });
+
+  addLog('🔥 Real-time sync active — global data syncing','ok');
 }
+
+// ── UI helpers ────────────────────────────
 
 async function refreshStorageInfo(){
   document.getElementById('storage-robots').textContent  = DB.robots.length;
   document.getElementById('storage-tasks').textContent   = DB.tasks.length;
   document.getElementById('storage-memory').textContent  = DB.memory.length;
-  try{
-    const r = await window.storage.get(STORAGE_KEY);
-    if(r && r.value){
-      const d = JSON.parse(r.value);
-      document.getElementById('storage-saved').textContent = d.savedAt ? new Date(d.savedAt).toLocaleString() : '—';
-    } else {
-      document.getElementById('storage-saved').textContent = 'Not saved yet';
-    }
-  }catch(e){ document.getElementById('storage-saved').textContent = 'N/A'; }
+  document.getElementById('storage-saved').textContent   = 'Firebase (live)';
 }
 
-function confirmClearDB(){
-  if(confirm('Sab local data delete ho jayega (robots, tasks, memory, reputation). Kya aap sure hain?')){
-    clearDB().then(()=>{
-      renderOverview(); renderRobots(); renderLeaderboard();
-      refreshStorageInfo();
-      toast('Local data cleared','info');
-    });
-  }
+async function clearDB(){
+  if(!confirm('Firebase se SAB global data delete ho jayega — sab users ka. Pakka?')) return;
+  const fs = getFS();
+  addLog('🗑️ Firebase data delete ho raha hai…','warn');
+  const dels = coll => fs.collection(coll).get()
+    .then(s=>Promise.all(s.docs.map(d=>d.ref.delete())));
+  await Promise.all(['robots','tasks','memory','reputation'].map(dels));
+  DB.robots=[]; DB.tasks=[]; DB.memory=[]; DB.reputation={};
+  renderOverview(); renderRobots(); renderLeaderboard();
+  refreshStorageInfo();
+  addLog('🗑️ Firebase data cleared','warn');
+  toast('All data cleared from Firebase','info');
 }
+
+function confirmClearDB(){ clearDB(); }
 
 // Chain connection state
 let chainApi  = null;
@@ -1136,7 +1249,8 @@ async function registerRobotCore(owner, hw, label, type='drone'){
   };
   DB.robots.push(robot);
   DB.reputation[robotId] = { score:0, total_tasks:0, successful_tasks:0, last_updated:now() };
-  persistDB();
+  await fbSaveRobot(robot);
+  await fbSaveReputation(robotId, DB.reputation[robotId]);
   return robot;
 }
 
@@ -1168,7 +1282,7 @@ async function postTaskCore(instr, type, reward, poster, robotId=null){
     tx_hash: result.txHash, local: false
   };
   DB.tasks.push(task);
-  persistDB();
+  await fbSaveTask(task);
   return task;
 }
 
@@ -1267,7 +1381,14 @@ async function writeMemoryOnchain(robotId, taskId, taskType, instruction, strate
   };
   DB.memory.push(entry);
   updateRepLocal(robotId, scores, scores.popw>=.5);
-  persistDB();
+  // Firebase: save memory, update task status, save reputation
+  await fbSaveMemory(entry);
+  await fbUpdateTask(taskId, {
+    status: scores.popw>=.5 ? 'completed' : 'failed',
+    popw_score: scores.popw,
+    completed_at: scores.popw>=.5 ? now() : null,
+  });
+  await fbSaveReputation(robotId, DB.reputation[robotId]);
   return entry;
 }
 
@@ -2260,10 +2381,13 @@ document.getElementById('wallet-modal').addEventListener('click',function(e){ if
 (async function init(){
   addLog('MemoryMesh AI Dashboard initialized (Onchain Mode)','info');
 
-  // Restore persisted data first
+  // Load global data from Firebase first
   await loadDB();
   renderOverview(); renderRobots(); renderLeaderboard();
   refreshStorageInfo();
+
+  // Attach real-time listeners so all users see live updates
+  attachRealtimeListeners();
 
   addLog('Connecting to Konnex Testnet…','info');
   addLog('Network: '+KONNEX_WS,'info');

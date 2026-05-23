@@ -708,6 +708,17 @@ select option{background:var(--card);}
     </div>
   </div>
   <div class="card">
+    <div class="section-title">Local Data Storage</div>
+    <div class="info-row"><div class="info-key">Robots</div><div class="info-val mono" id="storage-robots">—</div></div>
+    <div class="info-row"><div class="info-key">Tasks</div><div class="info-val mono" id="storage-tasks">—</div></div>
+    <div class="info-row"><div class="info-key">Memory Entries</div><div class="info-val mono" id="storage-memory">—</div></div>
+    <div class="info-row"><div class="info-key">Last Saved</div><div class="info-val mono" id="storage-saved">—</div></div>
+    <div style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap;">
+      <button class="btn btn-secondary" onclick="refreshStorageInfo()" style="font-size:.72rem;padding:.5rem 1rem;">🔄 Refresh Info</button>
+      <button class="btn btn-danger" onclick="confirmClearDB()" style="font-size:.72rem;padding:.5rem 1rem;">🗑️ Clear All Local Data</button>
+    </div>
+  </div>
+  <div class="card">
     <div class="section-title">Reputation Tiers</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1rem;">
       <div style="text-align:center;padding:1rem;background:var(--card2);border-radius:10px;border:1px solid var(--border);"><div style="font-size:1.5rem;margin-bottom:.3rem;">👑</div><div style="font-size:.9rem;font-weight:700;color:var(--yellow)">Elite</div><div style="font-family:var(--font-mono);font-size:.65rem;color:var(--muted2)">Score ≥ 0.85</div></div>
@@ -752,6 +763,75 @@ const PALLET     = 'memorymesh'; // pallet name on chain
 // ════════════════════════════════════════════
 const DB = { robots:[], tasks:[], memory:[], reputation:{} };
 const WALLET = { connected:false, address:null, name:null, balance:null, signer:null, readOnly:false };
+
+// ════════════════════════════════════════════
+//  PERSISTENT STORAGE — window.storage API
+//  Saves DB across page refreshes
+// ════════════════════════════════════════════
+const STORAGE_KEY = 'memorymesh-db';
+
+async function persistDB(){
+  try{
+    await window.storage.set(STORAGE_KEY, JSON.stringify({
+      robots:     DB.robots,
+      tasks:      DB.tasks,
+      memory:     DB.memory,
+      reputation: DB.reputation,
+      savedAt:    new Date().toISOString(),
+    }));
+  }catch(e){
+    console.warn('[MemoryMesh] Storage save failed:', e.message);
+  }
+}
+
+async function loadDB(){
+  try{
+    const result = await window.storage.get(STORAGE_KEY);
+    if(result && result.value){
+      const saved = JSON.parse(result.value);
+      if(Array.isArray(saved.robots))     DB.robots     = saved.robots;
+      if(Array.isArray(saved.tasks))      DB.tasks      = saved.tasks;
+      if(Array.isArray(saved.memory))     DB.memory     = saved.memory;
+      if(saved.reputation && typeof saved.reputation === 'object') DB.reputation = saved.reputation;
+      addLog(`📦 Restored: ${DB.robots.length} robots · ${DB.tasks.length} tasks · ${DB.memory.length} memory entries`,'ok');
+      return true;
+    }
+  }catch(e){
+    console.info('[MemoryMesh] No saved data:', e.message);
+  }
+  return false;
+}
+
+async function clearDB(){
+  try{ await window.storage.delete(STORAGE_KEY); }catch(e){}
+  DB.robots=[]; DB.tasks=[]; DB.memory=[]; DB.reputation={};
+  addLog('🗑️ All local data cleared','warn');
+}
+
+async function refreshStorageInfo(){
+  document.getElementById('storage-robots').textContent  = DB.robots.length;
+  document.getElementById('storage-tasks').textContent   = DB.tasks.length;
+  document.getElementById('storage-memory').textContent  = DB.memory.length;
+  try{
+    const r = await window.storage.get(STORAGE_KEY);
+    if(r && r.value){
+      const d = JSON.parse(r.value);
+      document.getElementById('storage-saved').textContent = d.savedAt ? new Date(d.savedAt).toLocaleString() : '—';
+    } else {
+      document.getElementById('storage-saved').textContent = 'Not saved yet';
+    }
+  }catch(e){ document.getElementById('storage-saved').textContent = 'N/A'; }
+}
+
+function confirmClearDB(){
+  if(confirm('Sab local data delete ho jayega (robots, tasks, memory, reputation). Kya aap sure hain?')){
+    clearDB().then(()=>{
+      renderOverview(); renderRobots(); renderLeaderboard();
+      refreshStorageInfo();
+      toast('Local data cleared','info');
+    });
+  }
+}
 
 // Chain connection state
 let chainApi  = null;
@@ -1056,6 +1136,7 @@ async function registerRobotCore(owner, hw, label, type='drone'){
   };
   DB.robots.push(robot);
   DB.reputation[robotId] = { score:0, total_tasks:0, successful_tasks:0, last_updated:now() };
+  persistDB();
   return robot;
 }
 
@@ -1087,6 +1168,7 @@ async function postTaskCore(instr, type, reward, poster, robotId=null){
     tx_hash: result.txHash, local: false
   };
   DB.tasks.push(task);
+  persistDB();
   return task;
 }
 
@@ -1185,6 +1267,7 @@ async function writeMemoryOnchain(robotId, taskId, taskType, instruction, strate
   };
   DB.memory.push(entry);
   updateRepLocal(robotId, scores, scores.popw>=.5);
+  persistDB();
   return entry;
 }
 
@@ -2176,9 +2259,14 @@ document.getElementById('wallet-modal').addEventListener('click',function(e){ if
 // ════════════════════════════════════════════
 (async function init(){
   addLog('MemoryMesh AI Dashboard initialized (Onchain Mode)','info');
+
+  // Restore persisted data first
+  await loadDB();
+  renderOverview(); renderRobots(); renderLeaderboard();
+  refreshStorageInfo();
+
   addLog('Connecting to Konnex Testnet…','info');
   addLog('Network: '+KONNEX_WS,'info');
-  renderOverview();
 
   // Start chain connection in background
   initChain().then(api=>{

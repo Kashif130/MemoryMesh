@@ -920,7 +920,8 @@ function buildFullSignedExtrinsic(pubkey32, signature65bytes, sigType, nonce, er
 
   const nonceCompact = compactEncode(nonce);
   const tipCompact   = compactEncode(tip);
-  const eraBytes     = era === '0x00' ? new Uint8Array([0x00]) : hexToBytes(era); // 0x00 = immortal
+  // era: if '0x00' = immortal (1 byte), else mortal era hex (2 bytes)
+  const eraBytes     = (era === '0x00') ? new Uint8Array([0x00]) : hexToBytes(era);
 
   // Signature type byte
   const sigTypeByte = new Uint8Array([sigType]);
@@ -996,14 +997,16 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   const transVersion = Number(rtVersion.transactionVersion);
 
   // ── Step 2: Build call bytes
-  const callBytes = buildRemarkCall(remarkStr, true);
+  // Use system.remark (not remarkWithEvent) — remarkWithEvent causes wasm unreachable on Konnex testnet
+  const callBytes = buildRemarkCall(remarkStr, false);
   const callHex   = bytesToHex(callBytes);
 
   // ── Step 3: Detect wallet type for tailored payload
-  // Talisman is strict — only standard fields, no extra keys
-  // SubWallet supports withSignedTransaction: true
-  const isTalisman = WALLET.name && WALLET.name.toLowerCase().includes('talisman');
-  const isSubWallet = WALLET.name && (WALLET.name.toLowerCase().includes('subwallet') || WALLET.name.toLowerCase().includes('sub wallet'));
+  // Detect via both WALLET.name AND injectedWeb3 keys (mobile DApp browser detection)
+  const walletNameLower = (WALLET.name || '').toLowerCase();
+  const injectedKeys = Object.keys(window.injectedWeb3 || {}).map(k=>k.toLowerCase());
+  const isTalisman = walletNameLower.includes('talisman') || injectedKeys.some(k=>k.includes('talisman'));
+  const isSubWallet = walletNameLower.includes('subwallet') || walletNameLower.includes('sub wallet') || injectedKeys.some(k=>k.includes('subwallet'));
 
   // Standard signed extensions — Talisman needs EXACT match with chain's list
   // We use the chain's own list from rtVersion to guarantee compatibility
@@ -1014,17 +1017,17 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   ];
 
   // ── Step 4: Build signing payload
-  // Rules that make BOTH wallets work:
-  //   specVersion, transactionVersion → plain Number (critical for Talisman)
-  //   nonce → plain number
-  //   tip → plain 0 (not hex)
-  //   era → '0x00' = immortal
-  //   genesisHash, blockHash → hex string as returned by RPC
+  // era: use mortal era (64 block window) instead of immortal 0x00
+  // Immortal era (0x00) causes "wasm unreachable" on some Substrate chains
+  // Mortal era = 2-byte encoding: period=64 → first byte encodes period+phase
+  const mortalEra = '0x' + ((blockNum & 63) * 4 + ((6 - 1) << 2 & 0xfc)).toString(16).padStart(2,'0') +
+                    Math.floor(blockNum / 64 % 256).toString(16).padStart(2,'0');
+
   const basePayload = {
     address,
     blockHash,
     blockNumber       : blockNum,
-    era               : '0x00',
+    era               : mortalEra,
     genesisHash,
     method            : callHex,
     nonce             : Number(nonce),
@@ -1042,13 +1045,17 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
 
   let signed;
 
-  // ── Strategy: Try subWallet payload first, then fallback to base for Talisman
+  // ── Strategy: Single popup per wallet type — no retry that causes double popup
   if(isTalisman){
-    // Talisman: use minimal standard payload only — no extra fields
+    // Talisman: use minimal standard payload — no withSignedTransaction
+    // Remove signedExtensions if first attempt fails (Talisman version-specific)
     try{
       signed = await signer.signPayload(basePayload);
     }catch(e1){
-      // Talisman sometimes needs signedExtensions stripped too
+      if(e1.message && (e1.message.includes('cancel') || e1.message.includes('reject') || e1.message.includes('denied') || e1.message.includes('Rejected'))){
+        throw e1; // User cancelled — do not retry (would show second popup)
+      }
+      // Non-user-cancel error: try without signedExtensions (one more attempt only)
       const { signedExtensions: _se, ...minimalPayload } = basePayload;
       try{
         signed = await signer.signPayload(minimalPayload);
@@ -1057,11 +1064,14 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
       }
     }
   } else {
-    // SubWallet / Polkadot.js / others: try withSignedTransaction first
+    // SubWallet / others: use withSignedTransaction — single attempt only (no fallback = no double popup)
     try{
       signed = await signer.signPayload(subWalletPayload);
     }catch(e1){
-      // Fallback: stripped payload
+      if(e1.message && (e1.message.includes('cancel') || e1.message.includes('reject') || e1.message.includes('denied') || e1.message.includes('Rejected'))){
+        throw e1; // User cancelled — stop here, do NOT show another popup
+      }
+      // Non-cancel error: try base payload once
       try{
         signed = await signer.signPayload(basePayload);
       }catch(e2){
@@ -1092,24 +1102,18 @@ async function sendSignedRemark(rpc, signer, address, remarkStr){
   // Detect signature type: sr25519=0x01, ed25519=0x00, ecdsa=0x02
   // Talisman uses sr25519 by default; SubWallet too
   const sigType = 0x01; // sr25519
-  const extrinsicHex = buildFullSignedExtrinsic(pubkey32, signature, sigType, Number(nonce), '0x00', 0, callBytes);
+  // Use mortalEra bytes for extrinsic (must match payload era)
+  const eraForExtrinsic = mortalEra;
+  const extrinsicHex = buildFullSignedExtrinsic(pubkey32, signature, sigType, Number(nonce), eraForExtrinsic, 0, callBytes);
 
-  // ── Step 7: Submit — retry with plain system.remark if remarkWithEvent rejected
+  // ── Step 7: Submit — no retry signing (would cause double popup)
   addLog('⛓ Broadcasting transaction…','info');
   let txHash;
   try{
     txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex]);
   }catch(submitErr){
-    addLog('remarkWithEvent rejected ('+submitErr.message+') — system.remark try kar raha hoon…','warn');
-    const callBytes2 = buildRemarkCall(remarkStr, false);
-    const callHex2   = bytesToHex(callBytes2);
-    const newNonce = Number(nonce) + 1;
-    const payload2 = { ...basePayload, method:callHex2, nonce:newNonce };
-    let signed2;
-    try{ signed2 = await signer.signPayload(payload2); }
-    catch(e){ throw new Error('Retry signing failed: '+e.message); }
-    const extrinsicHex2 = buildFullSignedExtrinsic(pubkey32, signed2.signature, sigType, newNonce, '0x00', 0, callBytes2);
-    txHash = await rpc.call('author_submitExtrinsic',[extrinsicHex2]);
+    // Submit failed — do NOT re-sign (no double popup). Just throw.
+    throw new Error('Transaction submit failed: ' + submitErr.message + '. Try again.');
   }
 
   return { txHash: txHash||hash(remarkStr+Date.now()), blockNumber:blockNum, local:false };
